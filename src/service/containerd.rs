@@ -1,212 +1,214 @@
-use crate::cri::runtime::RuntimeService;
-use crate::cri::image::ImageService;
-use crate::cri::*;
-use rmcp::handler::server::ServerHandler;
+use crate::api::runtime::v1::{
+    RuntimeServiceClient, ImageServiceClient,
+    VersionResponse, VersionRequest,
+    ListPodSandboxRequest, ListPodSandboxResponse,
+    ListContainersRequest, ListContainersResponse,
+    ListImagesRequest, ListImagesResponse,
+    ImageFsInfoRequest, ImageFsInfoResponse,
+};
 use anyhow::Result;
+use futures::future::ok;
 use std::sync::Arc;
+use tokio::sync::Mutex;
+use serde_json::json;
+use rmcp::{
+    Error as McpError, RoleServer, ServerHandler, const_string, model::*, schemars,
+    service::RequestContext, tool,
+};
 
-// 版本服务
-pub struct VersionService {
-    runtime: Arc<RuntimeService>,
+#[derive(Clone)]
+pub struct Server {
+    endpoint: String,
+    runtime_client: Arc<Mutex<Option<RuntimeServiceClient<tonic::transport::Channel>>>>,
+    image_client: Arc<Mutex<Option<ImageServiceClient<tonic::transport::Channel>>>>,
 }
-
-impl VersionService {
-    pub fn new(runtime: Arc<RuntimeService>) -> Self {
-        Self { runtime }
-    }
-    
-    pub async fn get_version(&self) -> Result<VersionResponse> {
-        let request = VersionRequest {
-            version: "v1".to_string(),
-        };
-        self.runtime.version(request).await
-    }
-}
-
-impl ServerHandler for VersionService {}
-
-// 运行时服务
-pub struct ContainerdRuntimeService {
-    runtime: Arc<RuntimeService>,
-}
-
-impl ContainerdRuntimeService {
-    pub fn new(runtime: Arc<RuntimeService>) -> Self {
-        Self { runtime }
-    }
-    
-    // 添加Pod相关方法
-    pub async fn run_pod_sandbox(&self, pod_config: PodSandboxConfig, runtime_handler: String) -> Result<String> {
-        let request = RunPodSandboxRequest {
-            config: Some(pod_config),
-            runtime_handler,
-        };
-        let response = self.runtime.run_pod_sandbox(request).await?;
-        Ok(response.pod_sandbox_id)
-    }
-    
-    pub async fn stop_pod_sandbox(&self, pod_sandbox_id: String) -> Result<()> {
-        let request = StopPodSandboxRequest {
-            pod_sandbox_id,
-        };
-        self.runtime.stop_pod_sandbox(request).await?;
-        Ok(())
-    }
-    
-    pub async fn remove_pod_sandbox(&self, pod_sandbox_id: String) -> Result<()> {
-        let request = RemovePodSandboxRequest {
-            pod_sandbox_id,
-        };
-        self.runtime.remove_pod_sandbox(request).await?;
-        Ok(())
-    }
-    
-    pub async fn list_pod_sandbox(&self, filter: Option<PodSandboxFilter>) -> Result<Vec<PodSandbox>> {
-        let request = ListPodSandboxRequest {
-            filter,
-        };
-        let response = self.runtime.list_pod_sandbox(request).await?;
-        Ok(response.items)
-    }
-    
-    pub async fn pod_sandbox_status(&self, pod_sandbox_id: String, verbose: bool) -> Result<PodSandboxStatus> {
-        let request = PodSandboxStatusRequest {
-            pod_sandbox_id,
-            verbose,
-        };
-        let response = self.runtime.pod_sandbox_status(request).await?;
-        match response.status {
-            Some(status) => Ok(status),
-            None => anyhow::bail!("No pod sandbox status returned"),
+#[tool(tool_box)]
+impl Server {
+    pub fn new(endpoint: String) -> Self {
+        Self {
+            endpoint,
+            runtime_client: Arc::new(Mutex::new(None)),
+            image_client: Arc::new(Mutex::new(None)),
         }
     }
     
-    // 添加容器相关方法
-    pub async fn create_container(&self, 
-        pod_sandbox_id: String, 
-        config: ContainerConfig, 
-        sandbox_config: PodSandboxConfig
-    ) -> Result<String> {
-        let request = CreateContainerRequest {
-            pod_sandbox_id,
-            config: Some(config),
-            sandbox_config: Some(sandbox_config),
-        };
-        let response = self.runtime.create_container(request).await?;
-        Ok(response.container_id)
-    }
-    
-    pub async fn start_container(&self, container_id: String) -> Result<()> {
-        let request = StartContainerRequest {
-            container_id,
-        };
-        self.runtime.start_container(request).await?;
+    /// 连接到containerd服务
+    pub async fn connect(&self) -> Result<()> {
+        let channel = tonic::transport::Channel::from_shared(self.endpoint.clone())?
+            .connect()
+            .await?;
+        
+        // 初始化runtime客户端
+        {
+            let mut lock = self.runtime_client.lock().await;
+            *lock = Some(RuntimeServiceClient::new(channel.clone()));
+        }
+        
+        // 初始化image客户端
+        {
+            let mut lock = self.image_client.lock().await;
+            *lock = Some(ImageServiceClient::new(channel));
+        }
+        
         Ok(())
     }
     
-    pub async fn stop_container(&self, container_id: String, timeout: i64) -> Result<()> {
-        let request = StopContainerRequest {
-            container_id,
-            timeout,
-        };
-        self.runtime.stop_container(request).await?;
-        Ok(())
+    #[tool(description = "Get version information")]
+    pub async fn version(&self) -> Result<CallToolResult,McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            let request = VersionRequest {
+                version: "v1".to_string(),
+            };
+            let response = client.clone().version(request).await.unwrap();
+            return Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&response.into_inner()).unwrap())]));
+        }
+        Ok(CallToolResult::success(vec![Content::text("")]))
     }
     
-    pub async fn remove_container(&self, container_id: String) -> Result<()> {
-        let request = RemoveContainerRequest {
-            container_id,
-        };
-        self.runtime.remove_container(request).await?;
-        Ok(())
+    #[tool(description = "List all pods")]
+    pub async fn list_pods(&self) -> Result<CallToolResult,McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            let request = ListPodSandboxRequest { filter:None };
+            let response = client.clone().list_pod_sandbox(request).await.unwrap();
+            return Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&response.into_inner()).unwrap())]));
+        }
+        Ok(CallToolResult::success(vec![Content::text("")]))
     }
     
-    pub async fn list_containers(&self, filter: Option<ContainerFilter>) -> Result<Vec<Container>> {
-        let request = ListContainersRequest {
-            filter,
-        };
-        let response = self.runtime.list_containers(request).await?;
-        Ok(response.containers)
+    #[tool(description = "List all containers")]
+    pub async fn list_containers(&self) -> Result<CallToolResult,McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            let request = ListContainersRequest { filter:None };
+            let response = client.clone().list_containers(request).await.unwrap();
+            return Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&response.into_inner()).unwrap())]));
+        }
+        Ok(CallToolResult::success(vec![Content::text("")]))
     }
     
-    pub async fn container_status(&self, container_id: String, verbose: bool) -> Result<ContainerStatus> {
-        let request = ContainerStatusRequest {
-            container_id,
-            verbose,
-        };
-        let response = self.runtime.container_status(request).await?;
-        match response.status {
-            Some(status) => Ok(status),
-            None => anyhow::bail!("No container status returned"),
+    #[tool(description = "List all images")]
+    pub async fn list_images(&self) -> Result<CallToolResult,McpError> {
+        let lock = self.image_client.lock().await;
+        if let Some(client) = &*lock {
+            let request = ListImagesRequest { filter:None };
+            let response = client.clone().list_images(request).await.unwrap();
+            return Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&response.into_inner()).unwrap())]));
+        }
+        Ok(CallToolResult::success(vec![Content::text("")]))
+    }
+    
+    #[tool(description = "Get image file system information")]
+    pub async fn image_fs_info(&self) -> Result<CallToolResult, McpError> {
+        let lock = self.image_client.lock().await;
+        if let Some(client) = &*lock {
+            let request = ImageFsInfoRequest {};
+            let response = client.clone().image_fs_info(request).await.unwrap();
+            return Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&response.into_inner()).unwrap())]));
+        }
+        Ok(CallToolResult::success(vec![Content::text("")]))
+    }
+}
+
+
+
+
+#[tool(tool_box)]
+impl ServerHandler for Server {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            protocol_version: ProtocolVersion::V_2024_11_05,
+            capabilities: ServerCapabilities::builder()
+                .enable_prompts()
+                .enable_resources()
+                .enable_tools()
+                .build(),
+            server_info: Implementation::from_build_env(),
+            instructions: Some("This server provides a containerd tool that can list pods, containers, and images. Use 'version' to get the version information, 'list_pods' to list all pods, 'list_containers' to list all containers, and 'list_images' to list all images.".to_string()),
         }
     }
-    
-    pub async fn exec_sync(&self, container_id: String, cmd: Vec<String>, timeout: i64) -> Result<(i32, Vec<u8>, Vec<u8>)> {
-        let request = ExecSyncRequest {
-            container_id,
-            cmd,
-            timeout,
-        };
-        let response = self.runtime.exec_sync(request).await?;
-        Ok((response.exit_code, response.stdout, response.stderr))
-    }
-}
 
-impl ServerHandler for ContainerdRuntimeService {}
-
-// 镜像服务
-pub struct ContainerdImageService {
-    image: Arc<ImageService>,
-}
-
-impl ContainerdImageService {
-    pub fn new(image: Arc<ImageService>) -> Self {
-        Self { image }
+    async fn list_resources(
+        &self,
+        _request: PaginatedRequestParam,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult {
+            resources: vec![
+            ],
+            next_cursor: None,
+        })
     }
-    
-    pub async fn list_images(&self, filter: Option<ImageFilter>) -> Result<Vec<Image>> {
-        let request = ListImagesRequest {
-            filter,
-        };
-        let response = self.image.list_images(request).await?;
-        Ok(response.images)
-    }
-    
-    pub async fn image_status(&self, image: ImageSpec, verbose: bool) -> Result<ImageStatus> {
-        let request = ImageStatusRequest {
-            image: Some(image),
-            verbose,
-        };
-        let response = self.image.image_status(request).await?;
-        match response.image {
-            Some(status) => Ok(status),
-            None => anyhow::bail!("No image status returned"),
+
+    async fn read_resource(
+        &self,
+        ReadResourceRequestParam { uri }: ReadResourceRequestParam,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        match uri.as_str() {
+            "str:////Users/to/some/path/" => {
+                let cwd = "/Users/to/some/path/";
+                Ok(ReadResourceResult {
+                    contents: vec![ResourceContents::text(cwd, uri)],
+                })
+            }
+            _ => Err(McpError::resource_not_found(
+                "resource_not_found",
+                Some(json!({
+                    "uri": uri
+                })),
+            )),
         }
     }
-    
-    pub async fn pull_image(&self, image: ImageSpec, auth: Option<AuthConfig>, sandbox_config: Option<PodSandboxConfig>) -> Result<String> {
-        let request = PullImageRequest {
-            image: Some(image.clone()),
-            auth,
-            sandbox_config,
-        };
-        let response = self.image.pull_image(request).await?;
-        Ok(response.image_ref)
+
+    async fn list_prompts(
+        &self,
+        _request: PaginatedRequestParam,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        Ok(ListPromptsResult {
+            next_cursor: None,
+            prompts: vec![Prompt::new(
+                "example_prompt",
+                Some("This is an example prompt that takes one required agrument, message"),
+                Some(vec![PromptArgument {
+                    name: "message".to_string(),
+                    description: Some("A message to put in the prompt".to_string()),
+                    required: Some(true),
+                }]),
+            )],
+        })
     }
-    
-    pub async fn remove_image(&self, image: ImageSpec) -> Result<()> {
-        let request = RemoveImageRequest {
-            image: Some(image),
-        };
-        self.image.remove_image(request).await?;
-        Ok(())
+
+    async fn get_prompt(
+        &self,
+        GetPromptRequestParam { name, arguments: _ }: GetPromptRequestParam,
+        _: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        match name.as_str() {
+            "example_prompt" => {
+                let prompt = "This is an example prompt with your message here: '{message}'";
+                Ok(GetPromptResult {
+                    description: None,
+                    messages: vec![PromptMessage {
+                        role: PromptMessageRole::User,
+                        content: PromptMessageContent::text(prompt),
+                    }],
+                })
+            }
+            _ => Err(McpError::invalid_params("prompt not found", None)),
+        }
     }
-    
-    pub async fn image_fs_info(&self) -> Result<Vec<FilesystemUsage>> {
-        let request = ImageFsInfoRequest {};
-        let response = self.image.image_fs_info(request).await?;
-        Ok(response.image_filesystems)
+
+    async fn list_resource_templates(
+        &self,
+        _request: PaginatedRequestParam,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        Ok(ListResourceTemplatesResult {
+            next_cursor: None,
+            resource_templates: Vec::new(),
+        })
     }
 }
-
-impl ServerHandler for ContainerdImageService {} 

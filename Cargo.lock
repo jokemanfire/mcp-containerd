@@ -602,6 +602,8 @@ dependencies = [
  "prost-build",
  "prost-types",
  "rmcp",
+ "serde",
+ "serde_json",
  "tokio",
  "tonic",
  "tonic-build",
