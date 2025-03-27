@@ -6,8 +6,7 @@ edition = "2021"
 [workspace]
 members = [
     ".",
-    "rig-integration"
-]
+ "simple-chat-client"]
 
 [dependencies]
 rmcp = { git = "https://github.com/4t145/rmcp", features = ["server","transport-io"] }

@@ -1,0 +1,8 @@
+openai_key = "YOUR_OPENAI_API_KEY"  # 如果不提供，将从环境变量获取
+
+[mcp]
+[[mcp.server]]
+name = "mcp-containerd"
+protocol = "stdio"
+command = "mcp-containerd"
+args = [" "]
