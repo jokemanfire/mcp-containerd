@@ -1,0 +1,18 @@
+[package]
+name = "rig-integration"
+edition = "2021"
+
+
+[dependencies]
+rig-core = "0.10.0"
+tokio = { version = "1", features = ["full"] }
+rmcp = { git = "https://github.com/4t145/rmcp", features = [
+    "client",
+    "transport-child-process",
+    "transport-sse",
+], no-default-features = true }
+anyhow = "1.0"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+futures = "0.3"

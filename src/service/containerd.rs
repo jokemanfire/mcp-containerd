@@ -1,20 +1,17 @@
 use crate::api::runtime::v1::{
-    RuntimeServiceClient, ImageServiceClient,
-    VersionResponse, VersionRequest,
-    ListPodSandboxRequest, ListPodSandboxResponse,
-    ListContainersRequest, ListContainersResponse,
-    ListImagesRequest, ListImagesResponse,
-    ImageFsInfoRequest, ImageFsInfoResponse,
+    ImageFsInfoRequest, ImageFsInfoResponse, ImageServiceClient, ListContainersRequest,
+    ListContainersResponse, ListImagesRequest, ListImagesResponse, ListPodSandboxRequest,
+    ListPodSandboxResponse, RuntimeServiceClient, VersionRequest, VersionResponse,
 };
 use anyhow::Result;
 use futures::future::ok;
+use rmcp::{
+    const_string, model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer,
+    ServerHandler,
+};
+use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use serde_json::json;
-use rmcp::{
-    Error as McpError, RoleServer, ServerHandler, const_string, model::*, schemars,
-    service::RequestContext, tool,
-};
 
 #[derive(Clone)]
 pub struct Server {
@@ -31,89 +28,92 @@ impl Server {
             image_client: Arc::new(Mutex::new(None)),
         }
     }
-    
-    /// 连接到containerd服务
+
     pub async fn connect(&self) -> Result<()> {
         let channel = tonic::transport::Channel::from_shared(self.endpoint.clone())?
             .connect()
             .await?;
-        
-        // 初始化runtime客户端
         {
             let mut lock = self.runtime_client.lock().await;
             *lock = Some(RuntimeServiceClient::new(channel.clone()));
         }
-        
-        // 初始化image客户端
+
         {
             let mut lock = self.image_client.lock().await;
             *lock = Some(ImageServiceClient::new(channel));
         }
-        
+
         Ok(())
     }
-    
+
     #[tool(description = "Get version information")]
-    pub async fn version(&self) -> Result<CallToolResult,McpError> {
+    pub async fn version(&self) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
             let request = VersionRequest {
                 version: "v1".to_string(),
             };
             let response = client.clone().version(request).await.unwrap();
-            return Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&response.into_inner()).unwrap())]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string(&response.into_inner()).unwrap(),
+            )]));
         }
         Ok(CallToolResult::success(vec![Content::text("")]))
     }
-    
+
     #[tool(description = "List all pods")]
-    pub async fn list_pods(&self) -> Result<CallToolResult,McpError> {
+    pub async fn list_pods(&self) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = ListPodSandboxRequest { filter:None };
+            let request = ListPodSandboxRequest { filter: None };
             let response = client.clone().list_pod_sandbox(request).await.unwrap();
-            return Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&response.into_inner()).unwrap())]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string(&response.into_inner()).unwrap(),
+            )]));
         }
         Ok(CallToolResult::success(vec![Content::text("")]))
     }
-    
+
     #[tool(description = "List all containers")]
-    pub async fn list_containers(&self) -> Result<CallToolResult,McpError> {
+    pub async fn list_containers(&self) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = ListContainersRequest { filter:None };
+            let request = ListContainersRequest { filter: None };
             let response = client.clone().list_containers(request).await.unwrap();
-            return Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&response.into_inner()).unwrap())]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string(&response.into_inner()).unwrap(),
+            )]));
         }
         Ok(CallToolResult::success(vec![Content::text("")]))
     }
-    
+
     #[tool(description = "List all images")]
-    pub async fn list_images(&self) -> Result<CallToolResult,McpError> {
+    pub async fn list_images(&self) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
-            let request = ListImagesRequest { filter:None };
+            let request = ListImagesRequest { filter: None };
             let response = client.clone().list_images(request).await.unwrap();
-            return Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&response.into_inner()).unwrap())]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string(&response.into_inner()).unwrap(),
+            )]));
         }
         Ok(CallToolResult::success(vec![Content::text("")]))
     }
-    
+
     #[tool(description = "Get image file system information")]
     pub async fn image_fs_info(&self) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
             let request = ImageFsInfoRequest {};
             let response = client.clone().image_fs_info(request).await.unwrap();
-            return Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&response.into_inner()).unwrap())]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string(&response.into_inner()).unwrap(),
+            )]));
         }
         Ok(CallToolResult::success(vec![Content::text("")]))
     }
 }
-
-
-
-
+const_string!(Echo = "echo");
 #[tool(tool_box)]
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerInfo {
@@ -135,8 +135,7 @@ impl ServerHandler for Server {
         _: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         Ok(ListResourcesResult {
-            resources: vec![
-            ],
+            resources: vec![],
             next_cursor: None,
         })
     }

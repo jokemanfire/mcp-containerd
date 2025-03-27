@@ -1,22 +1,19 @@
-mod service;
 mod cri;
+mod service;
 
 use anyhow::Result;
-use rmcp::{ServiceExt, transport::stdio};
-use tracing::{info, error};
+use rmcp::{transport::stdio, ServiceExt};
 use service::containerd::Server;
+use tracing_subscriber::{self, EnvFilter};
 
-// 定义生成的protobuf代码模块
 pub mod api {
     pub mod runtime {
         pub mod v1 {
-            // 包含tonic生成的gRPC客户端和服务器
             tonic::include_proto!("runtime.v1");
-            
-            // 重新导出一些常用的类型
+
             pub use self::{
-                runtime_service_client::RuntimeServiceClient,
                 image_service_client::ImageServiceClient,
+                runtime_service_client::RuntimeServiceClient,
             };
         }
     }
@@ -24,7 +21,6 @@ pub mod api {
 
 const DEFAULT_CONTAINERD_ENDPOINT: &str = "unix:///run/containerd/containerd.sock";
 
-// 替换 #[tokio::main] 宏
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -36,12 +32,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn async_main() -> Result<()> {
     // 初始化日志
-    tracing_subscriber::fmt::init();
-    info!("Starting MCP containerd server");
-    
-    let service = Server::new("unix:///run/containerd/containerd.sock".to_string()).serve(stdio()).await.inspect_err(|e| {
-        tracing::error!("serving error: {:?}", e);
-    })?;
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::DEBUG.into()))
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
+    tracing::info!("Starting MCP server");
+
+    let service = Server::new("unix:///run/containerd/containerd.sock".to_string())
+        .serve((tokio::io::stdin(), tokio::io::stdout()))
+        .await
+        .inspect_err(|e| {
+            tracing::error!("serving error: {:?}", e);
+        })?;
+
     service.waiting().await?;
     Ok(())
 }

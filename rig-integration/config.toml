@@ -1,0 +1,10 @@
+deepseek_key = ""
+cohere_key = ""
+
+[mcp]
+
+[[mcp.server]]
+name = "mcp-containerd"
+protocol = "stdio"
+command = "mcp-containerd"
+args = [" "]
