@@ -1,8 +1,10 @@
-openai_key = "YOUR_OPENAI_API_KEY"  # 如果不提供，将从环境变量获取
+openai_key = "key" 
+chat_url = "url"
+model_name = "model_name"
 
 [mcp]
 [[mcp.server]]
-name = "mcp-containerd"
+name = "MCP服务name"
 protocol = "stdio"
-command = "mcp-containerd"
+command = "MCP 服务path"
 args = [" "]

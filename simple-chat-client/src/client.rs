@@ -2,7 +2,6 @@ use crate::model::{CompletionRequest, CompletionResponse, Message, ToolCall, Too
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client as HttpClient;
-use std::sync::Arc;
 
 #[async_trait]
 pub trait ChatClient: Send + Sync {
@@ -16,11 +15,19 @@ pub struct OpenAIClient {
 }
 
 impl OpenAIClient {
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: String, url: Option<String>) -> Self {
+        let base_url = url.unwrap_or("https://api.openai.com/v1/chat/completions".to_string());
+        
+        // 创建不使用代理的HTTP客户端
+        let client = HttpClient::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| HttpClient::new());
+            
         Self {
             api_key,
-            client: HttpClient::new(),
-            base_url: "https://api.openai.com/v1/chat/completions".to_string(),
+            client,
+            base_url,
         }
     }
 
@@ -33,6 +40,12 @@ impl OpenAIClient {
 #[async_trait]
 impl ChatClient for OpenAIClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        println!("sending request to {}", self.base_url);
+        println!("using api key: {}", self.api_key);
+        let request_json = serde_json::to_string(&request)?;
+        println!("request content: {}", request_json);
+        // no proxy
+        
         let response = self
             .client
             .post(&self.base_url)
@@ -44,6 +57,7 @@ impl ChatClient for OpenAIClient {
 
         if !response.status().is_success() {
             let error_text = response.text().await?;
+            println!("API error: {}", error_text);
             return Err(anyhow::anyhow!("API Error: {}", error_text));
         }
 

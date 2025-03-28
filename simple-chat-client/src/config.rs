@@ -8,7 +8,9 @@ use std::process::Stdio;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub openai_key: Option<String>,
+    pub chat_url: Option<String>,
     pub mcp: Option<McpConfig>,
+    pub model_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

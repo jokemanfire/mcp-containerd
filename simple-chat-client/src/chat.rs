@@ -4,12 +4,10 @@ use crate::{
     tool::{Tool as ToolTrait, ToolSet},
 };
 use anyhow::Result;
-use async_trait::async_trait;
-use futures::StreamExt;
+
 use serde_json::Value;
 use std::io::{self, Write};
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 
 pub struct ChatSession {
     client: Arc<dyn ChatClient>,
@@ -30,6 +28,10 @@ impl ChatSession {
 
     pub fn add_system_prompt(&mut self, prompt: impl ToString) {
         self.messages.push(Message::system(prompt));
+    }
+
+    pub fn get_tools(&self) -> Vec<Arc<dyn ToolTrait>> {
+        self.tool_set.tools()
     }
 
     pub async fn chat(&mut self) -> Result<()> {
@@ -53,7 +55,7 @@ impl ChatSession {
 
             self.messages.push(Message::user(&input));
 
-            // 准备工具列表
+            // prepare tool list
             let tools = self.tool_set.tools();
             let tool_definitions = if !tools.is_empty() {
                 Some(
@@ -70,7 +72,7 @@ impl ChatSession {
                 None
             };
 
-            // 创建请求
+            // create request
             let request = CompletionRequest {
                 model: self.model.clone(),
                 messages: self.messages.clone(),
@@ -78,18 +80,18 @@ impl ChatSession {
                 tools: tool_definitions,
             };
 
-            // 发送请求
+            // send request
             let response = self.client.complete(request).await?;
 
             if let Some(choice) = response.choices.first() {
                 println!("AI: {}", choice.message.content);
                 self.messages.push(choice.message.clone());
 
-                // 检查消息中是否包含工具调用
+                // check if message contains tool call
                 if choice.message.content.contains("Tool:") {
                     let lines: Vec<&str> = choice.message.content.split('\n').collect();
 
-                    // 简单解析工具调用
+                    // simple parse tool call
                     let mut tool_name = None;
                     let mut args_text = Vec::new();
                     let mut parsing_args = false;
@@ -109,22 +111,22 @@ impl ChatSession {
                         if let Some(tool) = self.tool_set.get_tool(&name) {
                             println!("正在调用工具: {}", name);
 
-                            // 简单处理参数
+                            // simple handle args
                             let args_str = args_text.join("\n");
                             let args = match serde_json::from_str(&args_str) {
                                 Ok(v) => v,
                                 Err(_) => {
-                                    // 尝试将文本作为字符串处理
+                                    // try to handle args as string
                                     serde_json::Value::String(args_str)
                                 }
                             };
 
-                            // 调用工具
+                            // call tool
                             match tool.call(args).await {
                                 Ok(result) => {
                                     println!("工具结果: {}", result);
 
-                                    // 添加工具结果到对话
+                                    // add tool result to dialog
                                     self.messages.push(Message::user(result));
                                 }
                                 Err(e) => {
@@ -145,7 +147,7 @@ impl ChatSession {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl ToolTrait for ModelTool {
     fn name(&self) -> String {
         self.name.clone()
@@ -160,7 +162,6 @@ impl ToolTrait for ModelTool {
     }
 
     async fn call(&self, _args: Value) -> Result<String> {
-        // 这里需要一个真正的实现
         unimplemented!("ModelTool不能直接调用，仅用于传递工具定义")
     }
 }
