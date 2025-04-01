@@ -17,13 +17,13 @@ pub struct OpenAIClient {
 impl OpenAIClient {
     pub fn new(api_key: String, url: Option<String>) -> Self {
         let base_url = url.unwrap_or("https://api.openai.com/v1/chat/completions".to_string());
-        
+
         // 创建不使用代理的HTTP客户端
         let client = HttpClient::builder()
             .no_proxy()
             .build()
             .unwrap_or_else(|_| HttpClient::new());
-            
+
         Self {
             api_key,
             client,
@@ -45,7 +45,7 @@ impl ChatClient for OpenAIClient {
         let request_json = serde_json::to_string(&request)?;
         println!("request content: {}", request_json);
         // no proxy
-        
+
         let response = self
             .client
             .post(&self.base_url)

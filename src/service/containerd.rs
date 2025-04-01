@@ -1,21 +1,21 @@
 /*
  * Containerd Service Implementation
- * 
+ *
  * Current Supported Tool Interfaces:
  * - version: Get the runtime version information
  * - list_pods: List all pod sandboxes
  * - list_containers: List all containers
  * - list_images: List all images
  * - image_fs_info: Get image filesystem information
- * 
- * Future Planned Interfaces:
  * - create_pod: Create a new pod sandbox
- * - stop_pod: Stop a running pod sandbox
  * - remove_pod: Remove a pod sandbox
  * - create_container: Create a new container
+ * - remove_container: Remove a container
+ *
+ * Future Planned Interfaces:
+ * - stop_pod: Stop a running pod sandbox
  * - start_container: Start a created container
  * - stop_container: Stop a running container
- * - remove_container: Remove a container
  * - exec: Execute a command in a running container
  * - pull_image: Pull an image from registry
  * - remove_image: Remove an image
@@ -25,9 +25,13 @@
  */
 
 use crate::api::runtime::v1::{
-    ImageFsInfoRequest, ImageFsInfoResponse, ImageServiceClient, ListContainersRequest,
-    ListContainersResponse, ListImagesRequest, ListImagesResponse, ListPodSandboxRequest,
-    ListPodSandboxResponse, RuntimeServiceClient, VersionRequest, VersionResponse,
+    ContainerConfig, CreateContainerRequest, CreateContainerResponse, ImageFsInfoRequest,
+    ImageFsInfoResponse, ImageServiceClient, LinuxContainerConfig, LinuxPodSandboxConfig,
+    ListContainersRequest, ListContainersResponse, ListImagesRequest, ListImagesResponse,
+    ListPodSandboxRequest, ListPodSandboxResponse, Mount, PodSandboxConfig, RemoveContainerRequest,
+    RemoveContainerResponse, RemovePodSandboxRequest, RemovePodSandboxResponse,
+    RunPodSandboxRequest, RunPodSandboxResponse, RuntimeServiceClient, VersionRequest,
+    VersionResponse,
 };
 use anyhow::Result;
 use rmcp::{
@@ -35,9 +39,9 @@ use rmcp::{
     ServerHandler,
 };
 use serde_json::json;
-use tracing::debug;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct Server {
@@ -56,17 +60,19 @@ impl Server {
     }
 
     pub async fn connect(&self) -> Result<()> {
-        let socket_path = self.endpoint.strip_prefix("unix://").expect("endpoint must start with unix://").to_string();
-        
+        let socket_path = self
+            .endpoint
+            .strip_prefix("unix://")
+            .expect("endpoint must start with unix://")
+            .to_string();
+
         let channel = tonic::transport::Endpoint::try_from("http://[::]:50051")?
             .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
                 let socket_path = socket_path.to_string();
-                async move {
-                    tokio::net::UnixStream::connect(socket_path).await
-                }
+                async move { tokio::net::UnixStream::connect(socket_path).await }
             }))
             .await?;
-            
+
         {
             debug!("connect runtime client");
             let mut lock = self.runtime_client.lock().await;
@@ -148,7 +154,226 @@ impl Server {
         }
         Ok(CallToolResult::success(vec![Content::text("")]))
     }
-    
+
+    #[tool(description = "Create a new pod sandbox")]
+    pub async fn create_pod(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "{\"metadata\": {\"name\": \"my-pod\", \"namespace\": \"default\"}, \"hostname\": \"my-pod\"}"
+        )]
+        config: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // get pod config from json
+            let pod_config: PodSandboxConfig = match serde_json::from_value(config) {
+                Ok(config) => config,
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Invalid pod configuration: {}",
+                        e
+                    ))]));
+                }
+            };
+
+            let request = RunPodSandboxRequest {
+                config: Some(pod_config),
+                runtime_handler: "".to_string(),
+            };
+
+            match client.clone().run_pod_sandbox(request).await {
+                Ok(response) => {
+                    let pod_id = response.into_inner().pod_sandbox_id;
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "{{\"pod_id\": \"{}\"}}",
+                        pod_id
+                    ))]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to create pod: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
+
+    #[tool(description = "Remove a pod sandbox")]
+    pub async fn remove_pod(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "{\"pod_id\": \"pod-12345\"}")]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // get pod id from json
+            let pod_id = match params.get("pod_id") {
+                Some(id) => match id.as_str() {
+                    Some(id_str) => id_str.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "pod_id must be a string",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: pod_id",
+                    )]));
+                }
+            };
+
+            let request = RemovePodSandboxRequest {
+                pod_sandbox_id: pod_id,
+            };
+
+            match client.clone().remove_pod_sandbox(request).await {
+                Ok(_) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "{\"success\": true, \"message\": \"Pod removed successfully\"}",
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to remove pod: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
+
+    #[tool(description = "Create a new container in a pod")]
+    pub async fn create_container(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "{\"pod_id\": \"pod-12345\", \"config\": {\"metadata\": {\"name\": \"my-container\"}, \"image\": {\"image\": \"nginx:latest\"}, \"command\": [\"/bin/sh\"], \"args\": [\"-c\", \"while true; do echo hello; sleep 10; done\"]}}"
+        )]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // get pod id and container config from json
+            let pod_id = match params.get("pod_id") {
+                Some(id) => match id.as_str() {
+                    Some(id_str) => id_str.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "pod_id must be a string",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: pod_id",
+                    )]));
+                }
+            };
+
+            let container_config = match params.get("config") {
+                Some(config) => match serde_json::from_value::<ContainerConfig>(config.clone()) {
+                    Ok(config) => config,
+                    Err(e) => {
+                        return Ok(CallToolResult::error(vec![Content::text(format!(
+                            "Invalid container configuration: {}",
+                            e
+                        ))]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: config",
+                    )]));
+                }
+            };
+
+            let request = CreateContainerRequest {
+                pod_sandbox_id: pod_id,
+                config: Some(container_config),
+                sandbox_config: None,
+            };
+
+            match client.clone().create_container(request).await {
+                Ok(response) => {
+                    let container_id = response.into_inner().container_id;
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "{{\"container_id\": \"{}\"}}",
+                        container_id
+                    ))]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to create container: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
+
+    #[tool(description = "Remove a container")]
+    pub async fn remove_container(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "{\"container_id\": \"container-12345\"}")]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // get container id from json
+            let container_id = match params.get("container_id") {
+                Some(id) => match id.as_str() {
+                    Some(id_str) => id_str.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "container_id must be a string",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: container_id",
+                    )]));
+                }
+            };
+
+            let request = RemoveContainerRequest { container_id };
+
+            match client.clone().remove_container(request).await {
+                Ok(_) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "{\"success\": true, \"message\": \"Container removed successfully\"}",
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to remove container: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
 }
 const_string!(Echo = "echo");
 #[tool(tool_box)]
@@ -162,7 +387,7 @@ impl ServerHandler for Server {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("This server provides tools to interact with Containerd CRI. Currently supported tools: 'version' to get version information, 'list_pods' to list all pods, 'list_containers' to list all containers, 'list_images' to list all images, and 'image_fs_info' to get image filesystem information. Future updates will add more capabilities for container and pod management.".to_string()),
+            instructions: Some("This server provides tools to interact with Containerd CRI. Currently supported tools: 'version' to get version information, 'list_pods' to list all pods, 'list_containers' to list all containers, 'list_images' to list all images, 'image_fs_info' to get image filesystem information, 'create_pod' to create a new pod, 'remove_pod' to remove a pod, 'create_container' to create a new container, and 'remove_container' to remove a container. Future updates will add more capabilities for container and pod management.".to_string()),
         }
     }
 

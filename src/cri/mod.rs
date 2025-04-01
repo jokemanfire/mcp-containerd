@@ -4,7 +4,6 @@ pub mod runtime;
 pub use crate::api::runtime::v1::*;
 pub use crate::api::runtime::v1::{ImageServiceClient, RuntimeServiceClient};
 
-
 pub struct CriClient {
     runtime_service: Option<RuntimeServiceClient<tonic::transport::Channel>>,
     image_service: Option<ImageServiceClient<tonic::transport::Channel>>,

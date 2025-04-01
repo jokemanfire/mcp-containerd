@@ -39,7 +39,10 @@ async fn async_main() -> Result<()> {
         .init();
     tracing::info!("Starting MCP server");
     let container_server = Server::new(DEFAULT_CONTAINERD_ENDPOINT.to_string());
-    container_server.connect().await.expect("connect containerd failed");
+    container_server
+        .connect()
+        .await
+        .expect("connect containerd failed");
     let service = container_server
         .serve((tokio::io::stdin(), tokio::io::stdout()))
         .await

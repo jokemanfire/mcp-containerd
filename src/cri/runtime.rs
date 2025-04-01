@@ -3,7 +3,6 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-
 pub struct RuntimeService {
     client: Arc<Mutex<Option<CriClient>>>,
 }
@@ -22,7 +21,6 @@ impl RuntimeService {
         Ok(())
     }
 
-
     pub async fn version(&self, request: VersionRequest) -> Result<VersionResponse> {
         let lock = self.client.lock().await;
         if let Some(client) = &*lock {
@@ -33,7 +31,6 @@ impl RuntimeService {
         }
         anyhow::bail!("Runtime service not connected")
     }
-
 
     pub async fn run_pod_sandbox(
         &self,
@@ -49,7 +46,6 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-
     pub async fn stop_pod_sandbox(
         &self,
         request: StopPodSandboxRequest,
@@ -63,7 +59,6 @@ impl RuntimeService {
         }
         anyhow::bail!("Runtime service not connected")
     }
-
 
     pub async fn remove_pod_sandbox(
         &self,
@@ -79,7 +74,6 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-
     pub async fn pod_sandbox_status(
         &self,
         request: PodSandboxStatusRequest,
@@ -93,7 +87,6 @@ impl RuntimeService {
         }
         anyhow::bail!("Runtime service not connected")
     }
-
 
     pub async fn list_pod_sandbox(
         &self,
@@ -109,7 +102,6 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-
     pub async fn create_container(
         &self,
         request: CreateContainerRequest,
@@ -123,7 +115,6 @@ impl RuntimeService {
         }
         anyhow::bail!("Runtime service not connected")
     }
-
 
     pub async fn start_container(
         &self,
