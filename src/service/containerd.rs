@@ -1,15 +1,41 @@
+/*
+ * Containerd Service Implementation
+ * 
+ * Current Supported Tool Interfaces:
+ * - version: Get the runtime version information
+ * - list_pods: List all pod sandboxes
+ * - list_containers: List all containers
+ * - list_images: List all images
+ * - image_fs_info: Get image filesystem information
+ * 
+ * Future Planned Interfaces:
+ * - create_pod: Create a new pod sandbox
+ * - stop_pod: Stop a running pod sandbox
+ * - remove_pod: Remove a pod sandbox
+ * - create_container: Create a new container
+ * - start_container: Start a created container
+ * - stop_container: Stop a running container
+ * - remove_container: Remove a container
+ * - exec: Execute a command in a running container
+ * - pull_image: Pull an image from registry
+ * - remove_image: Remove an image
+ * - container_stats: Get container statistics
+ * - pod_stats: Get pod statistics
+ * - container_logs: Get container logs
+ */
+
 use crate::api::runtime::v1::{
     ImageFsInfoRequest, ImageFsInfoResponse, ImageServiceClient, ListContainersRequest,
     ListContainersResponse, ListImagesRequest, ListImagesResponse, ListPodSandboxRequest,
     ListPodSandboxResponse, RuntimeServiceClient, VersionRequest, VersionResponse,
 };
 use anyhow::Result;
-use futures::future::ok;
 use rmcp::{
     const_string, model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer,
     ServerHandler,
 };
 use serde_json::json;
+use tracing::debug;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -30,15 +56,25 @@ impl Server {
     }
 
     pub async fn connect(&self) -> Result<()> {
-        let channel = tonic::transport::Channel::from_shared(self.endpoint.clone())?
-            .connect()
+        let socket_path = self.endpoint.strip_prefix("unix://").expect("endpoint must start with unix://").to_string();
+        
+        let channel = tonic::transport::Endpoint::try_from("http://[::]:50051")?
+            .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+                let socket_path = socket_path.to_string();
+                async move {
+                    tokio::net::UnixStream::connect(socket_path).await
+                }
+            }))
             .await?;
+            
         {
+            debug!("connect runtime client");
             let mut lock = self.runtime_client.lock().await;
             *lock = Some(RuntimeServiceClient::new(channel.clone()));
         }
 
         {
+            debug!("connect image client");
             let mut lock = self.image_client.lock().await;
             *lock = Some(ImageServiceClient::new(channel));
         }
@@ -112,6 +148,7 @@ impl Server {
         }
         Ok(CallToolResult::success(vec![Content::text("")]))
     }
+    
 }
 const_string!(Echo = "echo");
 #[tool(tool_box)]
@@ -125,7 +162,7 @@ impl ServerHandler for Server {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("This server provides a containerd tool that can list pods, containers, and images. Use 'version' to get the version information, 'list_pods' to list all pods, 'list_containers' to list all containers, and 'list_images' to list all images.".to_string()),
+            instructions: Some("This server provides tools to interact with Containerd CRI. Currently supported tools: 'version' to get version information, 'list_pods' to list all pods, 'list_containers' to list all containers, 'list_images' to list all images, and 'image_fs_info' to get image filesystem information. Future updates will add more capabilities for container and pod management.".to_string()),
         }
     }
 

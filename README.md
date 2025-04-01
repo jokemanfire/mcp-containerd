@@ -1,63 +1,90 @@
 # MCP Containerd
 
-这是一个使用RMCP（Rust Model Context Protocol）库实现的MCP服务器，用于操作Containerd的CRI接口。
+This is an MCP server implemented using the RMCP (Rust Model Context Protocol) library for operating Containerd's CRI interfaces.
 
-## 功能特点
+## Features
 
-- 使用RMCP库实现MCP服务器
-- 支持Containerd的所有CRI接口操作
-- 提供运行时服务（Runtime Service）接口
-- 提供镜像服务（Image Service）接口
+- Implements an MCP server using the RMCP library
+- Supports all Containerd CRI interface operations
+- Provides Runtime Service interfaces
+- Provides Image Service interfaces
 
-## 前置条件
+## Prerequisites
 
-- Rust 开发环境
-- Containerd 已安装并运行
-- Protobuf 编译工具
+- Rust development environment
+- Containerd installed and running
+- Protobuf compilation tools
 
-## 构建
+## Building
 
 ```bash
 cargo build --release
 ```
 
-## 运行
+## Running
 
 ```bash
 cargo run --release
 ```
 
-默认情况下，服务将连接到 `unix:///run/containerd/containerd.sock` 端点。
+By default, the service will connect to the `unix:///run/containerd/containerd.sock` endpoint.
 
-## 服务结构
+## Using with simple_chat
 
-MCP服务器包含以下主要组件：
+The simple_chat client allows you to interact with the MCP Containerd service:
 
-- `version` 服务：提供CRI版本信息
-- `runtime` 服务：提供容器和Pod的运行时操作
-- `image` 服务：提供容器镜像操作
+```bash
+# First, start the MCP Containerd service
+cargo run --release
 
-## CRI接口
+# In another terminal, run the simple_chat client
+cd simple-chat-client
+cargo run --bin simple_chat
+```
 
-### 运行时服务
+Example interaction:
 
-- 创建/停止/删除 Pod Sandbox
-- 创建/启动/停止/删除 容器
-- 查询 Pod/容器 状态
-- 执行容器内命令
+```
+> please give me a list of containers
+AI: Listing containers...
+Tool: list_containers
+Result: {"containers":[...]}
 
-### 镜像服务
+> please give me a list of images
+AI: Here are the images in your containerd:
+Tool: list_images
+Result: {"images":[...]}
+```
 
-- 列出镜像
-- 获取镜像状态
-- 拉取镜像
-- 删除镜像
-- 获取镜像文件系统信息
+## Service Structure
 
-## 配置
+The MCP server includes the following main components:
 
-目前使用默认配置，后续版本将支持通过配置文件来自定义连接参数。
+- `version` service: Provides CRI version information
+- `runtime` service: Provides container and Pod runtime operations
+- `image` service: Provides container image operations
 
-## 许可证
+## CRI Interfaces
+
+### Runtime Service
+
+- Create/Stop/Delete Pod Sandbox
+- Create/Start/Stop/Delete containers
+- Query Pod/container status
+- Execute commands in containers
+
+### Image Service
+
+- List images
+- Get image status
+- Pull images
+- Delete images
+- Get image filesystem information
+
+## Configuration
+
+Currently using default configuration. Future versions will support customizing connection parameters through configuration files.
+
+## License
 
 Apache-2.0 

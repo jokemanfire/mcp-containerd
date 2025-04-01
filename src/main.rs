@@ -22,7 +22,7 @@ pub mod api {
 const DEFAULT_CONTAINERD_ENDPOINT: &str = "unix:///run/containerd/containerd.sock";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tokio::runtime::Builder::new_multi_thread()
+    let _ = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap()
@@ -31,15 +31,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn async_main() -> Result<()> {
-    // 初始化日志
+    // init logger
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::DEBUG.into()))
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
     tracing::info!("Starting MCP server");
-
-    let service = Server::new("unix:///run/containerd/containerd.sock".to_string())
+    let container_server = Server::new(DEFAULT_CONTAINERD_ENDPOINT.to_string());
+    container_server.connect().await.expect("connect containerd failed");
+    let service = container_server
         .serve((tokio::io::stdin(), tokio::io::stdout()))
         .await
         .inspect_err(|e| {

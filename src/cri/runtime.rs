@@ -3,7 +3,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-// 运行时服务MCP实现
+
 pub struct RuntimeService {
     client: Arc<Mutex<Option<CriClient>>>,
 }
@@ -22,7 +22,7 @@ impl RuntimeService {
         Ok(())
     }
 
-    // 版本信息
+
     pub async fn version(&self, request: VersionRequest) -> Result<VersionResponse> {
         let lock = self.client.lock().await;
         if let Some(client) = &*lock {
@@ -34,7 +34,7 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 创建Pod
+
     pub async fn run_pod_sandbox(
         &self,
         request: RunPodSandboxRequest,
@@ -49,7 +49,7 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 停止Pod
+
     pub async fn stop_pod_sandbox(
         &self,
         request: StopPodSandboxRequest,
@@ -64,7 +64,7 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 删除Pod
+
     pub async fn remove_pod_sandbox(
         &self,
         request: RemovePodSandboxRequest,
@@ -79,7 +79,7 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 获取Pod状态
+
     pub async fn pod_sandbox_status(
         &self,
         request: PodSandboxStatusRequest,
@@ -94,7 +94,7 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 列出Pod
+
     pub async fn list_pod_sandbox(
         &self,
         request: ListPodSandboxRequest,
@@ -109,7 +109,7 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 创建容器
+
     pub async fn create_container(
         &self,
         request: CreateContainerRequest,
@@ -124,7 +124,7 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 启动容器
+
     pub async fn start_container(
         &self,
         request: StartContainerRequest,
@@ -139,7 +139,6 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 停止容器
     pub async fn stop_container(
         &self,
         request: StopContainerRequest,
@@ -169,7 +168,6 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 列出容器
     pub async fn list_containers(
         &self,
         request: ListContainersRequest,
@@ -184,7 +182,6 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 容器状态
     pub async fn container_status(
         &self,
         request: ContainerStatusRequest,
@@ -199,7 +196,6 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 更新容器资源
     pub async fn update_container_resources(
         &self,
         request: UpdateContainerResourcesRequest,
@@ -214,7 +210,6 @@ impl RuntimeService {
         anyhow::bail!("Runtime service not connected")
     }
 
-    // 执行命令
     pub async fn exec_sync(&self, request: ExecSyncRequest) -> Result<ExecSyncResponse> {
         let lock = self.client.lock().await;
         if let Some(client) = &*lock {

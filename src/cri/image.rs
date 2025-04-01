@@ -3,7 +3,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-// 镜像服务MCP实现
+// image service
 pub struct ImageService {
     client: Arc<Mutex<Option<CriClient>>>,
 }
@@ -22,7 +22,7 @@ impl ImageService {
         Ok(())
     }
 
-    // 列出镜像
+    // list images
     pub async fn list_images(&self, request: ListImagesRequest) -> Result<ListImagesResponse> {
         let lock = self.client.lock().await;
         if let Some(client) = &*lock {
@@ -34,7 +34,7 @@ impl ImageService {
         anyhow::bail!("Image service not connected")
     }
 
-    // 镜像状态
+    // image status
     pub async fn image_status(&self, request: ImageStatusRequest) -> Result<ImageStatusResponse> {
         let lock = self.client.lock().await;
         if let Some(client) = &*lock {
@@ -46,7 +46,7 @@ impl ImageService {
         anyhow::bail!("Image service not connected")
     }
 
-    // 拉取镜像
+    // pull image
     pub async fn pull_image(&self, request: PullImageRequest) -> Result<PullImageResponse> {
         let lock = self.client.lock().await;
         if let Some(client) = &*lock {
@@ -58,7 +58,7 @@ impl ImageService {
         anyhow::bail!("Image service not connected")
     }
 
-    // 删除镜像
+    // remove image
     pub async fn remove_image(&self, request: RemoveImageRequest) -> Result<RemoveImageResponse> {
         let lock = self.client.lock().await;
         if let Some(client) = &*lock {
@@ -70,7 +70,7 @@ impl ImageService {
         anyhow::bail!("Image service not connected")
     }
 
-    // 镜像文件系统信息
+    // image fs info
     pub async fn image_fs_info(&self, request: ImageFsInfoRequest) -> Result<ImageFsInfoResponse> {
         let lock = self.client.lock().await;
         if let Some(client) = &*lock {
