@@ -29,18 +29,11 @@ cargo run --release
 
 By default, the service will connect to the `unix:///run/containerd/containerd.sock` endpoint.
 
-## Using with simple_chat
+## Using with simple-chat-client
 
-The simple_chat client allows you to interact with the MCP Containerd service:
+The simple-chat-client allows you to interact with the MCP Containerd service:
+simple-chat-client has moved to [simple-chat-client](https://github.com/modelcontextprotocol/rust-sdk/tree/main/examples/simple-chat-client)
 
-```bash
-# First, start the MCP Containerd service
-cargo run --release
-
-# In another terminal, run the simple_chat client
-cd simple-chat-client
-cargo run --bin simple_chat
-```
 
 Example interaction:
 

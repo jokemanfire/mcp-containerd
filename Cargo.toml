@@ -3,13 +3,9 @@ name = "mcp-containerd"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-members = [
-    ".",
- "simple-chat-client"]
 
 [dependencies]
-rmcp = { git = "https://github.com/4t145/rmcp", features = ["server","transport-io"] }
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", features = ["server","transport-io"] }
 tokio = { version = "1", features = ["full", "net"] }
 anyhow = "1.0"
 tracing = "0.1"
