@@ -34,14 +34,16 @@ use crate::api::runtime::v1::{
     VersionResponse,
 };
 use anyhow::Result;
+use futures::executor::block_on;
 use rmcp::{
     const_string, model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer,
     ServerHandler,
 };
-use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
+use crate::api::runtime::v1::PodSandboxMetadata;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct Server {
@@ -88,7 +90,29 @@ impl Server {
         Ok(())
     }
 
-    #[tool(description = "Get version information")]
+    #[tool(description = "Get containerd logs")]
+    pub async fn get_containerd_logs(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "The path to the log file, the default is /var/log/containerd/containerd.log"
+        )]
+        path: Option<String>,
+    ) -> Result<CallToolResult, McpError> {
+        let path = path.unwrap_or_default();
+        // check if the file exists
+        if !std::path::Path::new(&path).exists() {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "File {} does not exist",
+                path
+            ))]));
+        }
+        // read the file
+        let content = std::fs::read_to_string(path).unwrap();
+        Ok(CallToolResult::success(vec![Content::text(content)]))
+    }
+
+    #[tool(description = "Get version information from containerd runtime")]
     pub async fn version(&self) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -100,7 +124,9 @@ impl Server {
                 serde_json::to_string(&response.into_inner()).unwrap(),
             )]));
         }
-        Ok(CallToolResult::success(vec![Content::text("")]))
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
     }
 
     #[tool(description = "List all pods")]
@@ -113,7 +139,9 @@ impl Server {
                 serde_json::to_string(&response.into_inner()).unwrap(),
             )]));
         }
-        Ok(CallToolResult::success(vec![Content::text("")]))
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
     }
 
     #[tool(description = "List all containers")]
@@ -126,7 +154,9 @@ impl Server {
                 serde_json::to_string(&response.into_inner()).unwrap(),
             )]));
         }
-        Ok(CallToolResult::success(vec![Content::text("")]))
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
     }
 
     #[tool(description = "List all images")]
@@ -139,7 +169,9 @@ impl Server {
                 serde_json::to_string(&response.into_inner()).unwrap(),
             )]));
         }
-        Ok(CallToolResult::success(vec![Content::text("")]))
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
     }
 
     #[tool(description = "Get image file system information")]
@@ -152,7 +184,9 @@ impl Server {
                 serde_json::to_string(&response.into_inner()).unwrap(),
             )]));
         }
-        Ok(CallToolResult::success(vec![Content::text("")]))
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
     }
 
     #[tool(description = "Create a new pod sandbox")]
@@ -160,27 +194,210 @@ impl Server {
         &self,
         #[tool(param)]
         #[schemars(
-            description = "{\"metadata\": {\"name\": \"my-pod\", \"namespace\": \"default\"}, \"hostname\": \"my-pod\"}"
+            description = "
+            the create pod config, the default is:
+            {
+                \"metadata\": {
+                    \"name\": \"pod-name\",
+                    \"uid\": \"pod-uid\",
+                    \"namespace\": \"default\",
+                    \"attempt\": 0
+                },
+                \"hostname\": \"pod-hostname\",
+                \"log_directory\": \"/var/log/pods\",
+                \"dns_config\": {
+                    \"servers\": [\"8.8.8.8\"],
+                    \"searches\": [\"example.com\"],
+                    \"options\": [\"ndots:2\"]
+                },
+                \"port_mappings\": [
+                    {
+                        \"protocol\": \"TCP\",
+                        \"container_port\": 80,
+                        \"host_port\": 8080
+                    }
+                ],
+                \"labels\": {
+                    \"app\": \"nginx\"
+                },
+                \"annotations\": {
+                    \"key\": \"value\"
+                },
+                \"linux\": {
+                    \"cgroup_parent\": \"/kubepods\",
+                    \"security_context\": {
+                        \"namespace_options\": {
+                            \"network\": \"POD\",
+                            \"pid\": \"CONTAINER\"
+                        }
+                    }
+                }
+            }
+            "
         )]
         config: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
+        debug!("create pod request: {:?}", config);
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // get pod config from json
-            let pod_config: PodSandboxConfig = match serde_json::from_value(config) {
-                Ok(config) => config,
-                Err(e) => {
-                    return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "Invalid pod configuration: {}",
-                        e
-                    ))]));
-                }
+            // 创建默认配置
+            let mut pod_config = PodSandboxConfig {
+                metadata: Some(crate::api::runtime::v1::PodSandboxMetadata {
+                    name: "default-pod".to_string(),
+                    uid: uuid::Uuid::new_v4().to_string(),
+                    namespace: "default".to_string(),
+                    attempt: 0,
+                }),
+                hostname: "default-hostname".to_string(),
+                log_directory: "/var/log/pods".to_string(),
+                dns_config: None,
+                port_mappings: vec![],
+                labels: std::collections::HashMap::new(),
+                annotations: std::collections::HashMap::new(),
+                linux: None,
+                windows: None,
             };
+
+ 
+            if let Ok(mut user_config) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(config.clone()) {
+                if let Some(metadata_value) = user_config.get("metadata") {
+                    if let Ok(metadata_map) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(metadata_value.clone()) {
+                        let mut metadata = crate::api::runtime::v1::PodSandboxMetadata {
+                            name: "default-pod".to_string(),
+                            uid: uuid::Uuid::new_v4().to_string(),
+                            namespace: "default".to_string(),
+                            attempt: 0,
+                        };
+                        
+                        if let Some(name) = metadata_map.get("name") {
+                            if let Some(name_str) = name.as_str() {
+                                metadata.name = name_str.to_string();
+                            }
+                        }
+                        
+                        if let Some(uid) = metadata_map.get("uid") {
+                            if let Some(uid_str) = uid.as_str() {
+                                metadata.uid = uid_str.to_string();
+                            }
+                        }
+                        
+                        if let Some(namespace) = metadata_map.get("namespace") {
+                            if let Some(namespace_str) = namespace.as_str() {
+                                metadata.namespace = namespace_str.to_string();
+                            }
+                        }
+                        
+                        if let Some(attempt) = metadata_map.get("attempt") {
+                            if let Some(attempt_num) = attempt.as_u64() {
+                                metadata.attempt = attempt_num as u32;
+                            }
+                        }
+                        
+                        pod_config.metadata = Some(metadata);
+                    }
+                }
+                
+       
+                if let Some(hostname) = user_config.get("hostname") {
+                    if let Some(hostname_str) = hostname.as_str() {
+                        pod_config.hostname = hostname_str.to_string();
+                    }
+                }
+                
+                if let Some(log_dir) = user_config.get("log_directory") {
+                    if let Some(log_dir_str) = log_dir.as_str() {
+                        pod_config.log_directory = log_dir_str.to_string();
+                    }
+                }
+                
+          
+                if let Some(dns_value) = user_config.get("dns_config") {
+                    if let Ok(dns_config) = serde_json::from_value::<crate::api::runtime::v1::DnsConfig>(dns_value.clone()) {
+                        pod_config.dns_config = Some(dns_config);
+                    }
+                }
+                
+             
+                if let Some(port_mappings) = user_config.get("port_mappings") {
+                    if let Ok(mappings) = serde_json::from_value::<Vec<crate::api::runtime::v1::PortMapping>>(port_mappings.clone()) {
+                        pod_config.port_mappings = mappings;
+                    }
+                }
+                
+              
+                if let Some(labels) = user_config.get("labels") {
+                    if let Ok(label_map) = serde_json::from_value::<std::collections::HashMap<String, String>>(labels.clone()) {
+                        pod_config.labels = label_map;
+                    }
+                }
+                
+              
+                if let Some(annotations) = user_config.get("annotations") {
+                    if let Ok(anno_map) = serde_json::from_value::<std::collections::HashMap<String, String>>(annotations.clone()) {
+                        pod_config.annotations = anno_map;
+                    }
+                }
+                
+            
+                if let Some(linux_value) = user_config.get("linux") {
+                    if let Ok(linux_config) = serde_json::from_value::<crate::api::runtime::v1::LinuxPodSandboxConfig>(linux_value.clone()) {
+                        pod_config.linux = Some(linux_config);
+                    }
+                }
+                
+            
+                if let Some(windows_value) = user_config.get("windows") {
+                    if let Ok(windows_config) = serde_json::from_value::<crate::api::runtime::v1::WindowsPodSandboxConfig>(windows_value.clone()) {
+                        pod_config.windows = Some(windows_config);
+                    }
+                }
+            } else {
+                // if the config is not a map, try to parse it as PodSandboxConfig
+                if let Ok(user_pod_config) = serde_json::from_value::<PodSandboxConfig>(config) {
+                    // only merge non-empty fields
+                    if user_pod_config.metadata.is_some() {
+                        pod_config.metadata = user_pod_config.metadata;
+                    }
+                    
+                    if !user_pod_config.hostname.is_empty() {
+                        pod_config.hostname = user_pod_config.hostname;
+                    }
+                    
+                    if !user_pod_config.log_directory.is_empty() {
+                        pod_config.log_directory = user_pod_config.log_directory;
+                    }
+                    
+                    if user_pod_config.dns_config.is_some() {
+                        pod_config.dns_config = user_pod_config.dns_config;
+                    }
+                    
+                    if !user_pod_config.port_mappings.is_empty() {
+                        pod_config.port_mappings = user_pod_config.port_mappings;
+                    }
+                    
+                    if !user_pod_config.labels.is_empty() {
+                        pod_config.labels = user_pod_config.labels;
+                    }
+                    
+                    if !user_pod_config.annotations.is_empty() {
+                        pod_config.annotations = user_pod_config.annotations;
+                    }
+                    
+                    if user_pod_config.linux.is_some() {
+                        pod_config.linux = user_pod_config.linux;
+                    }
+                    
+                    if user_pod_config.windows.is_some() {
+                        pod_config.windows = user_pod_config.windows;
+                    }
+                }
+            }
 
             let request = RunPodSandboxRequest {
                 config: Some(pod_config),
                 runtime_handler: "".to_string(),
             };
+            debug!("run pod sandbox request: {:?}", request);
 
             match client.clone().run_pod_sandbox(request).await {
                 Ok(response) => {
@@ -391,38 +608,6 @@ impl ServerHandler for Server {
         }
     }
 
-    async fn list_resources(
-        &self,
-        _request: Option<PaginatedRequestParam>,
-        _: RequestContext<RoleServer>,
-    ) -> Result<ListResourcesResult, McpError> {
-        Ok(ListResourcesResult {
-            resources: vec![],
-            next_cursor: None,
-        })
-    }
-
-    async fn read_resource(
-        &self,
-        ReadResourceRequestParam { uri }: ReadResourceRequestParam,
-        _: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
-        match uri.as_str() {
-            "str:////Users/to/some/path/" => {
-                let cwd = "/Users/to/some/path/";
-                Ok(ReadResourceResult {
-                    contents: vec![ResourceContents::text(cwd, uri)],
-                })
-            }
-            _ => Err(McpError::resource_not_found(
-                "resource_not_found",
-                Some(json!({
-                    "uri": uri
-                })),
-            )),
-        }
-    }
-
     async fn list_prompts(
         &self,
         _request: Option<PaginatedRequestParam>,
@@ -431,45 +616,14 @@ impl ServerHandler for Server {
         Ok(ListPromptsResult {
             next_cursor: None,
             prompts: vec![Prompt::new(
-                "example_prompt",
-                Some("This is an example prompt that takes one required agrument, message"),
+                "check_containerd_status",
+                Some("Check if containerd is running"),
                 Some(vec![PromptArgument {
                     name: "message".to_string(),
                     description: Some("A message to put in the prompt".to_string()),
                     required: Some(true),
                 }]),
             )],
-        })
-    }
-
-    async fn get_prompt(
-        &self,
-        GetPromptRequestParam { name, arguments: _ }: GetPromptRequestParam,
-        _: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, McpError> {
-        match name.as_str() {
-            "example_prompt" => {
-                let prompt = "This is an example prompt with your message here: '{message}'";
-                Ok(GetPromptResult {
-                    description: None,
-                    messages: vec![PromptMessage {
-                        role: PromptMessageRole::User,
-                        content: PromptMessageContent::text(prompt),
-                    }],
-                })
-            }
-            _ => Err(McpError::invalid_params("prompt not found", None)),
-        }
-    }
-
-    async fn list_resource_templates(
-        &self,
-        _request: Option<PaginatedRequestParam>,
-        _: RequestContext<RoleServer>,
-    ) -> Result<ListResourceTemplatesResult, McpError> {
-        Ok(ListResourceTemplatesResult {
-            next_cursor: None,
-            resource_templates: Vec::new(),
         })
     }
 }

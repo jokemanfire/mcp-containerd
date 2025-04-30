@@ -5,7 +5,7 @@ edition = "2021"
 
 
 [dependencies]
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", features = ["server","transport-io"] }
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", features = ["server","transport-io","transport-sse-server","server"] }
 tokio = { version = "1", features = ["full", "net"] }
 anyhow = "1.0"
 tracing = "0.1"
@@ -21,6 +21,8 @@ futures = "0.3"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 tower = "0.4"
+clap = { version = "4.4", features = ["derive"] }
+uuid = { version = "1.0", features = ["v4"] }
 
 [build-dependencies]
 tonic-build = "0.11"
