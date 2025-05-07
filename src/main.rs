@@ -1,4 +1,3 @@
-mod cri;
 mod service;
 
 use anyhow::Result;

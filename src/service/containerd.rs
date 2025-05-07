@@ -34,7 +34,6 @@ use crate::api::runtime::v1::{
     VersionResponse,
 };
 use anyhow::Result;
-use futures::executor::block_on;
 use rmcp::{
     const_string, model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer,
     ServerHandler,
@@ -240,7 +239,7 @@ impl Server {
         debug!("create pod request: {:?}", config);
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // 创建默认配置
+            // create default config
             let mut pod_config = PodSandboxConfig {
                 metadata: Some(crate::api::runtime::v1::PodSandboxMetadata {
                     name: "default-pod".to_string(),
@@ -259,7 +258,7 @@ impl Server {
             };
 
  
-            if let Ok(mut user_config) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(config.clone()) {
+            if let Ok(user_config) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(config.clone()) {
                 if let Some(metadata_value) = user_config.get("metadata") {
                     if let Ok(metadata_map) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(metadata_value.clone()) {
                         let mut metadata = crate::api::runtime::v1::PodSandboxMetadata {
@@ -470,19 +469,49 @@ impl Server {
             "Runtime client not connected",
         )]))
     }
-
+    /// sandbox_config is none will cause containerd panic
+    /// fix it , and use more greater method to create container
     #[tool(description = "Create a new container in a pod")]
     pub async fn create_container(
         &self,
         #[tool(param)]
         #[schemars(
-            description = "{\"pod_id\": \"pod-12345\", \"config\": {\"metadata\": {\"name\": \"my-container\"}, \"image\": {\"image\": \"nginx:latest\"}, \"command\": [\"/bin/sh\"], \"args\": [\"-c\", \"while true; do echo hello; sleep 10; done\"]}}"
+            description = "
+            {
+                \"pod_id\": \"pod-12345\", 
+                \"config\": {
+                    \"metadata\": {
+                        \"name\": \"my-container\"
+                    }, 
+                    \"image\": {
+                        \"image\": \"nginx:latest\"
+                    }, 
+                    \"command\": [\"/bin/sh\"], 
+                    \"args\": [\"-c\", \"while true; do echo hello; sleep 10; done\"],
+                    \"working_dir\": \"/\",
+                    \"envs\": [
+                        {
+                            \"key\": \"PATH\",
+                            \"value\": \"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"
+                        }
+                    ],
+                    \"labels\": {
+                        \"app\": \"nginx\"
+                    },
+                    \"annotations\": {
+                        \"key\": \"value\"
+                    },
+                    \"log_path\": \"my-container/0.log\",
+                    \"stdin\": false,
+                    \"stdin_once\": false,
+                    \"tty\": false
+                }
+            }"
         )]
         params: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // get pod id and container config from json
             let pod_id = match params.get("pod_id") {
                 Some(id) => match id.as_str() {
                     Some(id_str) => id_str.to_string(),
@@ -499,28 +528,250 @@ impl Server {
                 }
             };
 
-            let container_config = match params.get("config") {
-                Some(config) => match serde_json::from_value::<ContainerConfig>(config.clone()) {
-                    Ok(config) => config,
-                    Err(e) => {
-                        return Ok(CallToolResult::error(vec![Content::text(format!(
-                            "Invalid container configuration: {}",
-                            e
-                        ))]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: config",
-                    )]));
-                }
+            let mut container_config = ContainerConfig {
+                metadata: Some(crate::api::runtime::v1::ContainerMetadata {
+                    name: format!("container-{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
+                    attempt: 0,
+                }),
+                image: Some(crate::api::runtime::v1::ImageSpec {
+                    image: "nginx:latest".to_string(),
+                    annotations: std::collections::HashMap::new(),
+                    runtime_handler: "".to_string(),
+                    user_specified_image: "".to_string(),
+                }),
+                command: vec![],
+                args: vec![],
+                working_dir: "/".to_string(),
+                envs: vec![],
+                mounts: vec![],
+                devices: vec![],
+                labels: std::collections::HashMap::new(),
+                annotations: std::collections::HashMap::new(),
+                log_path: "container.log".to_string(),
+                stdin: false,
+                stdin_once: false,
+                tty: false,
+                linux: None,
+                windows: None,
+                cdi_devices: vec![],
             };
+
+            // get container config from params
+            if let Some(config_value) = params.get("config") {
+                if let Ok(user_config) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(config_value.clone()) {
+                    // handle metadata
+                    if let Some(metadata_value) = user_config.get("metadata") {
+                        if let Ok(metadata_map) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(metadata_value.clone()) {
+                            let mut metadata = crate::api::runtime::v1::ContainerMetadata {
+                                name: format!("container-{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
+                                attempt: 0,
+                            };
+                            
+                            if let Some(name) = metadata_map.get("name") {
+                                if let Some(name_str) = name.as_str() {
+                                    metadata.name = name_str.to_string();
+                                }
+                            }
+                            
+                            if let Some(attempt) = metadata_map.get("attempt") {
+                                if let Some(attempt_num) = attempt.as_u64() {
+                                    metadata.attempt = attempt_num as u32;
+                                }
+                            }
+                            
+                            container_config.metadata = Some(metadata);
+                        }
+                    }
+                    
+                    // handle image
+                    if let Some(image_value) = user_config.get("image") {
+                        if let Ok(image_spec) = serde_json::from_value::<crate::api::runtime::v1::ImageSpec>(image_value.clone()) {
+                            container_config.image = Some(image_spec);
+                        }
+                    }
+                    
+                    // handle command and args
+                    if let Some(command) = user_config.get("command") {
+                        if let Ok(command_vec) = serde_json::from_value::<Vec<String>>(command.clone()) {
+                            container_config.command = command_vec;
+                        }
+                    }
+                    
+                    if let Some(args) = user_config.get("args") {
+                        if let Ok(args_vec) = serde_json::from_value::<Vec<String>>(args.clone()) {
+                            container_config.args = args_vec;
+                        }
+                    }
+                    
+                    // handle working_dir
+                    if let Some(working_dir) = user_config.get("working_dir") {
+                        if let Some(working_dir_str) = working_dir.as_str() {
+                            container_config.working_dir = working_dir_str.to_string();
+                        }
+                    }
+                    
+                    // handle envs
+                    if let Some(envs) = user_config.get("envs") {
+                        if let Ok(envs_vec) = serde_json::from_value::<Vec<crate::api::runtime::v1::KeyValue>>(envs.clone()) {
+                            container_config.envs = envs_vec;
+                        }
+                    }
+                    
+                    // handle mounts
+                    if let Some(mounts) = user_config.get("mounts") {
+                        if let Ok(mounts_vec) = serde_json::from_value::<Vec<crate::api::runtime::v1::Mount>>(mounts.clone()) {
+                            container_config.mounts = mounts_vec;
+                        }
+                    }
+                    
+                    // handle devices
+                    if let Some(devices) = user_config.get("devices") {
+                        if let Ok(devices_vec) = serde_json::from_value::<Vec<crate::api::runtime::v1::Device>>(devices.clone()) {
+                            container_config.devices = devices_vec;
+                        }
+                    }
+                    
+                    // handle labels
+                    if let Some(labels) = user_config.get("labels") {
+                        if let Ok(labels_map) = serde_json::from_value::<std::collections::HashMap<String, String>>(labels.clone()) {
+                            container_config.labels = labels_map;
+                        }
+                    }
+                    
+                    // handle annotations
+                    if let Some(annotations) = user_config.get("annotations") {
+                        if let Ok(annotations_map) = serde_json::from_value::<std::collections::HashMap<String, String>>(annotations.clone()) {
+                            container_config.annotations = annotations_map;
+                        }
+                    }
+                    
+                    // handle log path
+                    if let Some(log_path) = user_config.get("log_path") {
+                        if let Some(log_path_str) = log_path.as_str() {
+                            container_config.log_path = log_path_str.to_string();
+                        }
+                    }
+                    
+                    if let Some(stdin) = user_config.get("stdin") {
+                        if let Some(stdin_bool) = stdin.as_bool() {
+                            container_config.stdin = stdin_bool;
+                        }
+                    }
+                    
+                    if let Some(stdin_once) = user_config.get("stdin_once") {
+                        if let Some(stdin_once_bool) = stdin_once.as_bool() {
+                            container_config.stdin_once = stdin_once_bool;
+                        }
+                    }
+                    
+                    if let Some(tty) = user_config.get("tty") {
+                        if let Some(tty_bool) = tty.as_bool() {
+                            container_config.tty = tty_bool;
+                        }
+                    }
+                    
+                    // handle Linux config
+                    if let Some(linux_value) = user_config.get("linux") {
+                        if let Ok(linux_config) = serde_json::from_value::<crate::api::runtime::v1::LinuxContainerConfig>(linux_value.clone()) {
+                            container_config.linux = Some(linux_config);
+                        }
+                    }
+                    
+                    // handle Windows config
+                    if let Some(windows_value) = user_config.get("windows") {
+                        if let Ok(windows_config) = serde_json::from_value::<crate::api::runtime::v1::WindowsContainerConfig>(windows_value.clone()) {
+                            container_config.windows = Some(windows_config);
+                        }
+                    }
+                    
+                    // handle CDI devices
+                    if let Some(cdi_devices) = user_config.get("cdi_devices") {
+                        if let Ok(cdi_devices_vec) = serde_json::from_value::<Vec<crate::api::runtime::v1::CdiDevice>>(cdi_devices.clone()) {
+                            container_config.cdi_devices = cdi_devices_vec;
+                        }
+                    }
+                } else {
+                    // if cannot parse to Map, try to parse to ContainerConfig
+                    if let Ok(direct_config) = serde_json::from_value::<ContainerConfig>(config_value.clone()) {
+                        // only merge non-empty fields
+                        if direct_config.metadata.is_some() {
+                            container_config.metadata = direct_config.metadata;
+                        }
+                        
+                        if direct_config.image.is_some() {
+                            container_config.image = direct_config.image;
+                        }
+                        
+                        if !direct_config.command.is_empty() {
+                            container_config.command = direct_config.command;
+                        }
+                        
+                        if !direct_config.args.is_empty() {
+                            container_config.args = direct_config.args;
+                        }
+                        
+                        if !direct_config.working_dir.is_empty() {
+                            container_config.working_dir = direct_config.working_dir;
+                        }
+                        
+                        if !direct_config.envs.is_empty() {
+                            container_config.envs = direct_config.envs;
+                        }
+                        
+                        if !direct_config.mounts.is_empty() {
+                            container_config.mounts = direct_config.mounts;
+                        }
+                        
+                        if !direct_config.devices.is_empty() {
+                            container_config.devices = direct_config.devices;
+                        }
+                        
+                        if !direct_config.labels.is_empty() {
+                            container_config.labels = direct_config.labels;
+                        }
+                        
+                        if !direct_config.annotations.is_empty() {
+                            container_config.annotations = direct_config.annotations;
+                        }
+                        
+                        if !direct_config.log_path.is_empty() {
+                            container_config.log_path = direct_config.log_path;
+                        }
+                        
+                        container_config.stdin = direct_config.stdin;
+                        container_config.stdin_once = direct_config.stdin_once;
+                        container_config.tty = direct_config.tty;
+                        
+                        if direct_config.linux.is_some() {
+                            container_config.linux = direct_config.linux;
+                        }
+                        
+                        if direct_config.windows.is_some() {
+                            container_config.windows = direct_config.windows;
+                        }
+                        
+                        if !direct_config.cdi_devices.is_empty() {
+                            container_config.cdi_devices = direct_config.cdi_devices;
+                        }
+                    } else {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "Invalid container configuration format",
+                        )]));
+                    }
+                }
+            } else {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Missing required parameter: config",
+                )]));
+            }
 
             let request = CreateContainerRequest {
                 pod_sandbox_id: pod_id,
                 config: Some(container_config),
                 sandbox_config: None,
             };
+
+            debug!("create container request: {:?}", request);
 
             match client.clone().create_container(request).await {
                 Ok(response) => {
