@@ -1,5 +1,8 @@
 /*
- * Containerd Service Implementation
+ * Containerd Service Implementation - Container Runtime Interface (CRI)
+ *
+ * This service provides tools to interact with Containerd through the Container Runtime Interface (CRI).
+ * CRI is a plugin interface which enables kubelet to use different container runtimes.
  *
  * Current Supported Tool Interfaces:
  * - version: Get the runtime version information
@@ -11,8 +14,6 @@
  * - remove_pod: Remove a pod sandbox
  * - create_container: Create a new container
  * - remove_container: Remove a container
- *
- * Future Planned Interfaces:
  * - stop_pod: Stop a running pod sandbox
  * - start_container: Start a created container
  * - stop_container: Stop a running container
@@ -24,6 +25,7 @@
  * - container_logs: Get container logs
  */
 
+use crate::api::runtime::v1::PodSandboxMetadata;
 use crate::api::runtime::v1::{
     ContainerConfig, CreateContainerRequest, CreateContainerResponse, ImageFsInfoRequest,
     ImageFsInfoResponse, ImageServiceClient, LinuxContainerConfig, LinuxPodSandboxConfig,
@@ -33,6 +35,7 @@ use crate::api::runtime::v1::{
     RunPodSandboxRequest, RunPodSandboxResponse, RuntimeServiceClient, VersionRequest,
     VersionResponse,
 };
+use crate::cri::config::{parse_container_config, parse_pod_config};
 use anyhow::Result;
 use rmcp::{
     const_string, model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer,
@@ -41,8 +44,6 @@ use rmcp::{
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
-use crate::api::runtime::v1::PodSandboxMetadata;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct Server {
@@ -88,13 +89,13 @@ impl Server {
 
         Ok(())
     }
-
-    #[tool(description = "Get containerd logs")]
+    /// This interface may have some security issues, need to be fixed
+    #[tool(description = "Get the containerd log file contents to diagnose runtime issues")]
     pub async fn get_containerd_logs(
         &self,
         #[tool(param)]
         #[schemars(
-            description = "The path to the log file, the default is /var/log/containerd/containerd.log"
+            description = "The path to the containerd log file, default is /var/log/containerd/containerd.log"
         )]
         path: Option<String>,
     ) -> Result<CallToolResult, McpError> {
@@ -111,7 +112,9 @@ impl Server {
         Ok(CallToolResult::success(vec![Content::text(content)]))
     }
 
-    #[tool(description = "Get version information from containerd runtime")]
+    #[tool(
+        description = "Get version information from the containerd runtime to verify compatibility"
+    )]
     pub async fn version(&self) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -128,7 +131,9 @@ impl Server {
         )]))
     }
 
-    #[tool(description = "List all pods")]
+    #[tool(
+        description = "List all pod sandboxes created by containerd, showing their status and metadata"
+    )]
     pub async fn list_pods(&self) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -143,7 +148,9 @@ impl Server {
         )]))
     }
 
-    #[tool(description = "List all containers")]
+    #[tool(
+        description = "List all containers managed by containerd, including their status, pod association, and metadata"
+    )]
     pub async fn list_containers(&self) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -158,7 +165,9 @@ impl Server {
         )]))
     }
 
-    #[tool(description = "List all images")]
+    #[tool(
+        description = "List all container images available in the containerd registry, including their tags, digests, and sizes"
+    )]
     pub async fn list_images(&self) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
@@ -173,7 +182,9 @@ impl Server {
         )]))
     }
 
-    #[tool(description = "Get image file system information")]
+    #[tool(
+        description = "Get filesystem information for container images, including storage capacity and usage metrics"
+    )]
     pub async fn image_fs_info(&self) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
@@ -188,13 +199,14 @@ impl Server {
         )]))
     }
 
-    #[tool(description = "Create a new pod sandbox")]
+    #[tool(
+        description = "Create a new pod sandbox with customizable configuration including networking, security settings, and resource constraints"
+    )]
     pub async fn create_pod(
         &self,
         #[tool(param)]
-        #[schemars(
-            description = "
-            the create pod config, the default is:
+        #[schemars(description = "
+            For creating a pod config, the example is:
             {
                 \"metadata\": {
                     \"name\": \"pod-name\",
@@ -232,165 +244,14 @@ impl Server {
                     }
                 }
             }
-            "
-        )]
+            ")]
         config: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
         debug!("create pod request: {:?}", config);
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // create default config
-            let mut pod_config = PodSandboxConfig {
-                metadata: Some(crate::api::runtime::v1::PodSandboxMetadata {
-                    name: "default-pod".to_string(),
-                    uid: uuid::Uuid::new_v4().to_string(),
-                    namespace: "default".to_string(),
-                    attempt: 0,
-                }),
-                hostname: "default-hostname".to_string(),
-                log_directory: "/var/log/pods".to_string(),
-                dns_config: None,
-                port_mappings: vec![],
-                labels: std::collections::HashMap::new(),
-                annotations: std::collections::HashMap::new(),
-                linux: None,
-                windows: None,
-            };
-
- 
-            if let Ok(user_config) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(config.clone()) {
-                if let Some(metadata_value) = user_config.get("metadata") {
-                    if let Ok(metadata_map) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(metadata_value.clone()) {
-                        let mut metadata = crate::api::runtime::v1::PodSandboxMetadata {
-                            name: "default-pod".to_string(),
-                            uid: uuid::Uuid::new_v4().to_string(),
-                            namespace: "default".to_string(),
-                            attempt: 0,
-                        };
-                        
-                        if let Some(name) = metadata_map.get("name") {
-                            if let Some(name_str) = name.as_str() {
-                                metadata.name = name_str.to_string();
-                            }
-                        }
-                        
-                        if let Some(uid) = metadata_map.get("uid") {
-                            if let Some(uid_str) = uid.as_str() {
-                                metadata.uid = uid_str.to_string();
-                            }
-                        }
-                        
-                        if let Some(namespace) = metadata_map.get("namespace") {
-                            if let Some(namespace_str) = namespace.as_str() {
-                                metadata.namespace = namespace_str.to_string();
-                            }
-                        }
-                        
-                        if let Some(attempt) = metadata_map.get("attempt") {
-                            if let Some(attempt_num) = attempt.as_u64() {
-                                metadata.attempt = attempt_num as u32;
-                            }
-                        }
-                        
-                        pod_config.metadata = Some(metadata);
-                    }
-                }
-                
-       
-                if let Some(hostname) = user_config.get("hostname") {
-                    if let Some(hostname_str) = hostname.as_str() {
-                        pod_config.hostname = hostname_str.to_string();
-                    }
-                }
-                
-                if let Some(log_dir) = user_config.get("log_directory") {
-                    if let Some(log_dir_str) = log_dir.as_str() {
-                        pod_config.log_directory = log_dir_str.to_string();
-                    }
-                }
-                
-          
-                if let Some(dns_value) = user_config.get("dns_config") {
-                    if let Ok(dns_config) = serde_json::from_value::<crate::api::runtime::v1::DnsConfig>(dns_value.clone()) {
-                        pod_config.dns_config = Some(dns_config);
-                    }
-                }
-                
-             
-                if let Some(port_mappings) = user_config.get("port_mappings") {
-                    if let Ok(mappings) = serde_json::from_value::<Vec<crate::api::runtime::v1::PortMapping>>(port_mappings.clone()) {
-                        pod_config.port_mappings = mappings;
-                    }
-                }
-                
-              
-                if let Some(labels) = user_config.get("labels") {
-                    if let Ok(label_map) = serde_json::from_value::<std::collections::HashMap<String, String>>(labels.clone()) {
-                        pod_config.labels = label_map;
-                    }
-                }
-                
-              
-                if let Some(annotations) = user_config.get("annotations") {
-                    if let Ok(anno_map) = serde_json::from_value::<std::collections::HashMap<String, String>>(annotations.clone()) {
-                        pod_config.annotations = anno_map;
-                    }
-                }
-                
-            
-                if let Some(linux_value) = user_config.get("linux") {
-                    if let Ok(linux_config) = serde_json::from_value::<crate::api::runtime::v1::LinuxPodSandboxConfig>(linux_value.clone()) {
-                        pod_config.linux = Some(linux_config);
-                    }
-                }
-                
-            
-                if let Some(windows_value) = user_config.get("windows") {
-                    if let Ok(windows_config) = serde_json::from_value::<crate::api::runtime::v1::WindowsPodSandboxConfig>(windows_value.clone()) {
-                        pod_config.windows = Some(windows_config);
-                    }
-                }
-            } else {
-                // if the config is not a map, try to parse it as PodSandboxConfig
-                if let Ok(user_pod_config) = serde_json::from_value::<PodSandboxConfig>(config) {
-                    // only merge non-empty fields
-                    if user_pod_config.metadata.is_some() {
-                        pod_config.metadata = user_pod_config.metadata;
-                    }
-                    
-                    if !user_pod_config.hostname.is_empty() {
-                        pod_config.hostname = user_pod_config.hostname;
-                    }
-                    
-                    if !user_pod_config.log_directory.is_empty() {
-                        pod_config.log_directory = user_pod_config.log_directory;
-                    }
-                    
-                    if user_pod_config.dns_config.is_some() {
-                        pod_config.dns_config = user_pod_config.dns_config;
-                    }
-                    
-                    if !user_pod_config.port_mappings.is_empty() {
-                        pod_config.port_mappings = user_pod_config.port_mappings;
-                    }
-                    
-                    if !user_pod_config.labels.is_empty() {
-                        pod_config.labels = user_pod_config.labels;
-                    }
-                    
-                    if !user_pod_config.annotations.is_empty() {
-                        pod_config.annotations = user_pod_config.annotations;
-                    }
-                    
-                    if user_pod_config.linux.is_some() {
-                        pod_config.linux = user_pod_config.linux;
-                    }
-                    
-                    if user_pod_config.windows.is_some() {
-                        pod_config.windows = user_pod_config.windows;
-                    }
-                }
-            }
+            // Parse pod configuration with defaults
+            let pod_config = parse_pod_config(config);
 
             let request = RunPodSandboxRequest {
                 config: Some(pod_config),
@@ -420,7 +281,9 @@ impl Server {
         )]))
     }
 
-    #[tool(description = "Remove a pod sandbox")]
+    #[tool(
+        description = "Remove a pod sandbox and clean up all associated resources, including network namespaces"
+    )]
     pub async fn remove_pod(
         &self,
         #[tool(param)]
@@ -471,12 +334,14 @@ impl Server {
     }
     /// sandbox_config is none will cause containerd panic
     /// fix it , and use more greater method to create container
-    #[tool(description = "Create a new container in a pod")]
+    #[tool(
+        description = "Create a new container within a pod sandbox with configurable runtime settings, environment variables, mounts, and image specification"
+    )]
     pub async fn create_container(
         &self,
         #[tool(param)]
-        #[schemars(
-            description = "
+        #[schemars(description = "
+            For creating a container config, the example is:
             {
                 \"pod_id\": \"pod-12345\", 
                 \"config\": {
@@ -506,12 +371,17 @@ impl Server {
                     \"stdin_once\": false,
                     \"tty\": false
                 }
-            }"
-        )]
+            }")]
         params: serde_json::Value,
+        #[tool(param)]
+        #[schemars(
+            description = "Optional pod sandbox configuration to use when creating the container. Provides context for container creation within the pod."
+        )]
+        pod_config: Option<serde_json::Value>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
+            // Get pod_id from params
             let pod_id = match params.get("pod_id") {
                 Some(id) => match id.as_str() {
                     Some(id_str) => id_str.to_string(),
@@ -528,247 +398,23 @@ impl Server {
                 }
             };
 
-            let mut container_config = ContainerConfig {
-                metadata: Some(crate::api::runtime::v1::ContainerMetadata {
-                    name: format!("container-{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
-                    attempt: 0,
-                }),
-                image: Some(crate::api::runtime::v1::ImageSpec {
-                    image: "nginx:latest".to_string(),
-                    annotations: std::collections::HashMap::new(),
-                    runtime_handler: "".to_string(),
-                    user_specified_image: "".to_string(),
-                }),
-                command: vec![],
-                args: vec![],
-                working_dir: "/".to_string(),
-                envs: vec![],
-                mounts: vec![],
-                devices: vec![],
-                labels: std::collections::HashMap::new(),
-                annotations: std::collections::HashMap::new(),
-                log_path: "container.log".to_string(),
-                stdin: false,
-                stdin_once: false,
-                tty: false,
-                linux: None,
-                windows: None,
-                cdi_devices: vec![],
+            // Get container configuration from params
+            let container_config = match params.get("config") {
+                Some(config) => parse_container_config(config.clone()),
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: config",
+                    )]));
+                }
             };
 
-            // get container config from params
-            if let Some(config_value) = params.get("config") {
-                if let Ok(user_config) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(config_value.clone()) {
-                    // handle metadata
-                    if let Some(metadata_value) = user_config.get("metadata") {
-                        if let Ok(metadata_map) = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(metadata_value.clone()) {
-                            let mut metadata = crate::api::runtime::v1::ContainerMetadata {
-                                name: format!("container-{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
-                                attempt: 0,
-                            };
-                            
-                            if let Some(name) = metadata_map.get("name") {
-                                if let Some(name_str) = name.as_str() {
-                                    metadata.name = name_str.to_string();
-                                }
-                            }
-                            
-                            if let Some(attempt) = metadata_map.get("attempt") {
-                                if let Some(attempt_num) = attempt.as_u64() {
-                                    metadata.attempt = attempt_num as u32;
-                                }
-                            }
-                            
-                            container_config.metadata = Some(metadata);
-                        }
-                    }
-                    
-                    // handle image
-                    if let Some(image_value) = user_config.get("image") {
-                        if let Ok(image_spec) = serde_json::from_value::<crate::api::runtime::v1::ImageSpec>(image_value.clone()) {
-                            container_config.image = Some(image_spec);
-                        }
-                    }
-                    
-                    // handle command and args
-                    if let Some(command) = user_config.get("command") {
-                        if let Ok(command_vec) = serde_json::from_value::<Vec<String>>(command.clone()) {
-                            container_config.command = command_vec;
-                        }
-                    }
-                    
-                    if let Some(args) = user_config.get("args") {
-                        if let Ok(args_vec) = serde_json::from_value::<Vec<String>>(args.clone()) {
-                            container_config.args = args_vec;
-                        }
-                    }
-                    
-                    // handle working_dir
-                    if let Some(working_dir) = user_config.get("working_dir") {
-                        if let Some(working_dir_str) = working_dir.as_str() {
-                            container_config.working_dir = working_dir_str.to_string();
-                        }
-                    }
-                    
-                    // handle envs
-                    if let Some(envs) = user_config.get("envs") {
-                        if let Ok(envs_vec) = serde_json::from_value::<Vec<crate::api::runtime::v1::KeyValue>>(envs.clone()) {
-                            container_config.envs = envs_vec;
-                        }
-                    }
-                    
-                    // handle mounts
-                    if let Some(mounts) = user_config.get("mounts") {
-                        if let Ok(mounts_vec) = serde_json::from_value::<Vec<crate::api::runtime::v1::Mount>>(mounts.clone()) {
-                            container_config.mounts = mounts_vec;
-                        }
-                    }
-                    
-                    // handle devices
-                    if let Some(devices) = user_config.get("devices") {
-                        if let Ok(devices_vec) = serde_json::from_value::<Vec<crate::api::runtime::v1::Device>>(devices.clone()) {
-                            container_config.devices = devices_vec;
-                        }
-                    }
-                    
-                    // handle labels
-                    if let Some(labels) = user_config.get("labels") {
-                        if let Ok(labels_map) = serde_json::from_value::<std::collections::HashMap<String, String>>(labels.clone()) {
-                            container_config.labels = labels_map;
-                        }
-                    }
-                    
-                    // handle annotations
-                    if let Some(annotations) = user_config.get("annotations") {
-                        if let Ok(annotations_map) = serde_json::from_value::<std::collections::HashMap<String, String>>(annotations.clone()) {
-                            container_config.annotations = annotations_map;
-                        }
-                    }
-                    
-                    // handle log path
-                    if let Some(log_path) = user_config.get("log_path") {
-                        if let Some(log_path_str) = log_path.as_str() {
-                            container_config.log_path = log_path_str.to_string();
-                        }
-                    }
-                    
-                    if let Some(stdin) = user_config.get("stdin") {
-                        if let Some(stdin_bool) = stdin.as_bool() {
-                            container_config.stdin = stdin_bool;
-                        }
-                    }
-                    
-                    if let Some(stdin_once) = user_config.get("stdin_once") {
-                        if let Some(stdin_once_bool) = stdin_once.as_bool() {
-                            container_config.stdin_once = stdin_once_bool;
-                        }
-                    }
-                    
-                    if let Some(tty) = user_config.get("tty") {
-                        if let Some(tty_bool) = tty.as_bool() {
-                            container_config.tty = tty_bool;
-                        }
-                    }
-                    
-                    // handle Linux config
-                    if let Some(linux_value) = user_config.get("linux") {
-                        if let Ok(linux_config) = serde_json::from_value::<crate::api::runtime::v1::LinuxContainerConfig>(linux_value.clone()) {
-                            container_config.linux = Some(linux_config);
-                        }
-                    }
-                    
-                    // handle Windows config
-                    if let Some(windows_value) = user_config.get("windows") {
-                        if let Ok(windows_config) = serde_json::from_value::<crate::api::runtime::v1::WindowsContainerConfig>(windows_value.clone()) {
-                            container_config.windows = Some(windows_config);
-                        }
-                    }
-                    
-                    // handle CDI devices
-                    if let Some(cdi_devices) = user_config.get("cdi_devices") {
-                        if let Ok(cdi_devices_vec) = serde_json::from_value::<Vec<crate::api::runtime::v1::CdiDevice>>(cdi_devices.clone()) {
-                            container_config.cdi_devices = cdi_devices_vec;
-                        }
-                    }
-                } else {
-                    // if cannot parse to Map, try to parse to ContainerConfig
-                    if let Ok(direct_config) = serde_json::from_value::<ContainerConfig>(config_value.clone()) {
-                        // only merge non-empty fields
-                        if direct_config.metadata.is_some() {
-                            container_config.metadata = direct_config.metadata;
-                        }
-                        
-                        if direct_config.image.is_some() {
-                            container_config.image = direct_config.image;
-                        }
-                        
-                        if !direct_config.command.is_empty() {
-                            container_config.command = direct_config.command;
-                        }
-                        
-                        if !direct_config.args.is_empty() {
-                            container_config.args = direct_config.args;
-                        }
-                        
-                        if !direct_config.working_dir.is_empty() {
-                            container_config.working_dir = direct_config.working_dir;
-                        }
-                        
-                        if !direct_config.envs.is_empty() {
-                            container_config.envs = direct_config.envs;
-                        }
-                        
-                        if !direct_config.mounts.is_empty() {
-                            container_config.mounts = direct_config.mounts;
-                        }
-                        
-                        if !direct_config.devices.is_empty() {
-                            container_config.devices = direct_config.devices;
-                        }
-                        
-                        if !direct_config.labels.is_empty() {
-                            container_config.labels = direct_config.labels;
-                        }
-                        
-                        if !direct_config.annotations.is_empty() {
-                            container_config.annotations = direct_config.annotations;
-                        }
-                        
-                        if !direct_config.log_path.is_empty() {
-                            container_config.log_path = direct_config.log_path;
-                        }
-                        
-                        container_config.stdin = direct_config.stdin;
-                        container_config.stdin_once = direct_config.stdin_once;
-                        container_config.tty = direct_config.tty;
-                        
-                        if direct_config.linux.is_some() {
-                            container_config.linux = direct_config.linux;
-                        }
-                        
-                        if direct_config.windows.is_some() {
-                            container_config.windows = direct_config.windows;
-                        }
-                        
-                        if !direct_config.cdi_devices.is_empty() {
-                            container_config.cdi_devices = direct_config.cdi_devices;
-                        }
-                    } else {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "Invalid container configuration format",
-                        )]));
-                    }
-                }
-            } else {
-                return Ok(CallToolResult::error(vec![Content::text(
-                    "Missing required parameter: config",
-                )]));
-            }
+            // Parse pod configuration for sandbox_config
+            let sandbox_config = pod_config.map(parse_pod_config);
 
             let request = CreateContainerRequest {
                 pod_sandbox_id: pod_id,
                 config: Some(container_config),
-                sandbox_config: None,
+                sandbox_config,
             };
 
             debug!("create container request: {:?}", request);
@@ -795,7 +441,9 @@ impl Server {
         )]))
     }
 
-    #[tool(description = "Remove a container")]
+    #[tool(
+        description = "Remove a container from a pod sandbox and clean up all associated resources, including filesystem mounts"
+    )]
     pub async fn remove_container(
         &self,
         #[tool(param)]
@@ -842,6 +490,635 @@ impl Server {
             "Runtime client not connected",
         )]))
     }
+
+    #[tool(description = "Stop a running pod sandbox and all its containers")]
+    pub async fn stop_pod(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "JSON containing the pod_id to identify which pod sandbox to stop"
+        )]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // Get pod id from json
+            let pod_id = match params.get("pod_id") {
+                Some(id) => match id.as_str() {
+                    Some(id_str) => id_str.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "pod_id must be a string",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: pod_id",
+                    )]));
+                }
+            };
+
+            let request = crate::api::runtime::v1::StopPodSandboxRequest {
+                pod_sandbox_id: pod_id,
+            };
+
+            match client.clone().stop_pod_sandbox(request).await {
+                Ok(_) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "{\"success\": true, \"message\": \"Pod stopped successfully\"}",
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to stop pod: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
+
+    #[tool(description = "Start a created container, making it ready to execute workloads")]
+    pub async fn start_container(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "JSON containing the container_id to identify which container to start"
+        )]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // Get container id from json
+            let container_id = match params.get("container_id") {
+                Some(id) => match id.as_str() {
+                    Some(id_str) => id_str.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "container_id must be a string",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: container_id",
+                    )]));
+                }
+            };
+
+            let request = crate::api::runtime::v1::StartContainerRequest { container_id };
+
+            match client.clone().start_container(request).await {
+                Ok(_) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "{\"success\": true, \"message\": \"Container started successfully\"}",
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to start container: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
+
+    #[tool(description = "Stop a running container gracefully with an optional timeout")]
+    pub async fn stop_container(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "JSON containing the container_id to identify which container to stop and an optional timeout in seconds"
+        )]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // Get container id from json
+            let container_id = match params.get("container_id") {
+                Some(id) => match id.as_str() {
+                    Some(id_str) => id_str.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "container_id must be a string",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: container_id",
+                    )]));
+                }
+            };
+
+            // Get timeout if provided (default: 0)
+            let timeout = match params.get("timeout") {
+                Some(timeout) => match timeout.as_i64() {
+                    Some(t) => t as i64,
+                    None => 0,
+                },
+                None => 0,
+            };
+
+            let request = crate::api::runtime::v1::StopContainerRequest {
+                container_id,
+                timeout,
+            };
+
+            match client.clone().stop_container(request).await {
+                Ok(_) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "{\"success\": true, \"message\": \"Container stopped successfully\"}",
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to stop container: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
+
+    #[tool(description = "Execute a command in a running container with optional TTY and stdin")]
+    pub async fn exec(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "JSON containing the container_id and command to execute, with optional TTY and stdin settings"
+        )]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // Get container id
+            let container_id = match params.get("container_id") {
+                Some(id) => match id.as_str() {
+                    Some(id_str) => id_str.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "container_id must be a string",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: container_id",
+                    )]));
+                }
+            };
+
+            // Get command
+            let command = match params.get("command") {
+                Some(cmd) => match cmd.as_array() {
+                    Some(cmd_arr) => {
+                        let mut cmd_vec = Vec::new();
+                        for c in cmd_arr {
+                            if let Some(c_str) = c.as_str() {
+                                cmd_vec.push(c_str.to_string());
+                            } else {
+                                return Ok(CallToolResult::error(vec![Content::text(
+                                    "Command array must contain only strings",
+                                )]));
+                            }
+                        }
+                        cmd_vec
+                    }
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "command must be an array of strings",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: command",
+                    )]));
+                }
+            };
+
+            // Get tty (optional)
+            let tty = match params.get("tty") {
+                Some(t) => match t.as_bool() {
+                    Some(t_bool) => t_bool,
+                    None => false,
+                },
+                None => false,
+            };
+
+            // Get stdin (optional)
+            let stdin = match params.get("stdin") {
+                Some(s) => match s.as_bool() {
+                    Some(s_bool) => s_bool,
+                    None => false,
+                },
+                None => false,
+            };
+
+            let request = crate::api::runtime::v1::ExecSyncRequest {
+                container_id,
+                cmd: command,
+                timeout: 10, // Default timeout of 10 seconds
+            };
+
+            match client.clone().exec_sync(request).await {
+                Ok(response) => {
+                    let response_inner = response.into_inner();
+                    let stdout = String::from_utf8_lossy(&response_inner.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&response_inner.stderr).to_string();
+                    let exit_code = response_inner.exit_code;
+
+                    let result = serde_json::json!({
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "exit_code": exit_code
+                    });
+
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        result.to_string(),
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to execute command: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
+
+    #[tool(
+        description = "Pull an image from a registry to make it available for container creation"
+    )]
+    pub async fn pull_image(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "JSON containing the image reference to pull and optional authentication credentials"
+        )]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.image_client.lock().await;
+        if let Some(client) = &*lock {
+            // Get image reference
+            let image = match params.get("image") {
+                Some(img) => match img.as_str() {
+                    Some(img_str) => img_str.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "image must be a string",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: image",
+                    )]));
+                }
+            };
+
+            // Get auth config if provided
+            let auth = match params.get("auth") {
+                Some(auth) => {
+                    let auth_map = auth.as_object();
+                    match auth_map {
+                        Some(map) => {
+                            let username =
+                                map.get("username").and_then(|u| u.as_str()).unwrap_or("");
+                            let password =
+                                map.get("password").and_then(|p| p.as_str()).unwrap_or("");
+                            let auth = map.get("auth").and_then(|a| a.as_str()).unwrap_or("");
+                            let server_address = map
+                                .get("server_address")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("");
+                            let identity_token = map
+                                .get("identity_token")
+                                .and_then(|i| i.as_str())
+                                .unwrap_or("");
+
+                            Some(crate::api::runtime::v1::AuthConfig {
+                                username: username.to_string(),
+                                password: password.to_string(),
+                                auth: auth.to_string(),
+                                server_address: server_address.to_string(),
+                                identity_token: identity_token.to_string(),
+                                registry_token: "".to_string(),
+                            })
+                        }
+                        None => None,
+                    }
+                }
+                None => None,
+            };
+
+            let request = crate::api::runtime::v1::PullImageRequest {
+                image: Some(crate::api::runtime::v1::ImageSpec {
+                    image,
+                    annotations: std::collections::HashMap::new(),
+                    runtime_handler: "".to_string(),
+                    user_specified_image: "".to_string(),
+                }),
+                auth,
+                sandbox_config: None,
+            };
+
+            match client.clone().pull_image(request).await {
+                Ok(response) => {
+                    let image_ref = response.into_inner().image_ref;
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "{{\"success\": true, \"image_ref\": \"{}\"}}",
+                        image_ref
+                    ))]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to pull image: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Image client not connected",
+        )]))
+    }
+
+    #[tool(description = "Remove an image from the container runtime to free up disk space")]
+    pub async fn remove_image(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "JSON containing the image reference to remove")]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.image_client.lock().await;
+        if let Some(client) = &*lock {
+            // Get image reference
+            let image = match params.get("image") {
+                Some(img) => match img.as_str() {
+                    Some(img_str) => img_str.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "image must be a string",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: image",
+                    )]));
+                }
+            };
+
+            let request = crate::api::runtime::v1::RemoveImageRequest {
+                image: Some(crate::api::runtime::v1::ImageSpec {
+                    image,
+                    annotations: std::collections::HashMap::new(),
+                    runtime_handler: "".to_string(),
+                    user_specified_image: "".to_string(),
+                }),
+            };
+
+            match client.clone().remove_image(request).await {
+                Ok(_) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "{\"success\": true, \"message\": \"Image removed successfully\"}",
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to remove image: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Image client not connected",
+        )]))
+    }
+
+    #[tool(
+        description = "Retrieve logs from a container with optional timestamp, tail lines, and follow options"
+    )]
+    pub async fn container_logs(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "JSON containing the container_id, tail lines, follow option, and timestamps option"
+        )]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // Get container id
+            let container_id = match params.get("container_id") {
+                Some(id) => match id.as_str() {
+                    Some(id_str) => id_str.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "container_id must be a string",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: container_id",
+                    )]));
+                }
+            };
+
+            // Get tail lines option
+            let tail_lines = match params.get("tail") {
+                Some(t) => match t.as_i64() {
+                    Some(t_int) => t_int as i64,
+                    None => 100, // Default to 100 lines
+                },
+                None => 100, // Default to 100 lines
+            };
+
+            let request = crate::api::runtime::v1::ContainerStatusRequest {
+                container_id: container_id.clone(),
+                verbose: true,
+            };
+
+            match client.clone().container_status(request).await {
+                Ok(status_response) => {
+                    let status = status_response.into_inner();
+
+                    // Get the log path from the container status
+                    let log_path = match status.status {
+                        Some(container_status) => {
+                            format!(
+                                "{}/{}",
+                                status.info.get("sandboxLogDir").unwrap_or(&"".to_string()),
+                                container_status.log_path
+                            )
+                        }
+                        None => {
+                            return Ok(CallToolResult::error(vec![Content::text(
+                                "Container status not available",
+                            )]));
+                        }
+                    };
+
+                    // Read the log file
+                    match std::fs::read_to_string(&log_path) {
+                        Ok(log_content) => {
+                            let mut lines: Vec<&str> = log_content.lines().collect();
+
+                            // Apply tail if needed
+                            if tail_lines > 0 && (tail_lines as usize) < lines.len() {
+                                lines = lines[(lines.len() - tail_lines as usize)..].to_vec();
+                            }
+
+                            // Join lines with newline
+                            let filtered_content = lines.join("\n");
+
+                            return Ok(CallToolResult::success(vec![Content::text(
+                                filtered_content,
+                            )]));
+                        }
+                        Err(e) => {
+                            return Ok(CallToolResult::error(vec![Content::text(format!(
+                                "Failed to read container logs at {}: {}",
+                                log_path, e
+                            ))]));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to get container status: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
+
+    #[tool(description = "Get detailed resource usage statistics for a container")]
+    pub async fn container_stats(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "JSON containing the container_id to retrieve statistics for")]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // Get container id
+            let container_id = match params.get("container_id") {
+                Some(id) => match id.as_str() {
+                    Some(id_str) => id_str.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "container_id must be a string",
+                        )]));
+                    }
+                },
+                None => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Missing required parameter: container_id",
+                    )]));
+                }
+            };
+
+            let request = crate::api::runtime::v1::ContainerStatsRequest { container_id };
+
+            match client.clone().container_stats(request).await {
+                Ok(response) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string(&response.into_inner()).unwrap(),
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to get container stats: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
+
+    #[tool(description = "Get aggregate resource usage statistics for all pods")]
+    pub async fn pod_stats(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "JSON containing optional filter for pod_id to limit results")]
+        params: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // Get optional pod id filter
+            let pod_id = match params.get("pod_id") {
+                Some(id) => match id.as_str() {
+                    Some(id_str) => Some(id_str.to_string()),
+                    None => None,
+                },
+                None => None,
+            };
+
+            // Create filter if pod_id is provided
+            let filter = match pod_id {
+                Some(id) => Some(crate::api::runtime::v1::PodSandboxStatsFilter {
+                    id,
+                    label_selector: std::collections::HashMap::new(),
+                }),
+                None => None,
+            };
+
+            let request = crate::api::runtime::v1::ListPodSandboxStatsRequest { filter };
+
+            match client.clone().list_pod_sandbox_stats(request).await {
+                Ok(response) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string(&response.into_inner()).unwrap(),
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to get pod stats: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
 }
 const_string!(Echo = "echo");
 #[tool(tool_box)]
@@ -855,7 +1132,7 @@ impl ServerHandler for Server {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("This server provides tools to interact with Containerd CRI. Currently supported tools: 'version' to get version information, 'list_pods' to list all pods, 'list_containers' to list all containers, 'list_images' to list all images, 'image_fs_info' to get image filesystem information, 'create_pod' to create a new pod, 'remove_pod' to remove a pod, 'create_container' to create a new container, and 'remove_container' to remove a container. Future updates will add more capabilities for container and pod management.".to_string()),
+            instructions: Some("This server provides tools to interact with the Container Runtime Interface (CRI) of Containerd. You can manage container lifecycle including creating and removing pods and containers, listing existing resources, and querying runtime information. Available tools: 'version' for runtime version; 'list_pods', 'list_containers', 'list_images', 'image_fs_info' for resource listing; 'create_pod', 'stop_pod', and 'remove_pod' for pod management; 'create_container', 'start_container', 'stop_container', 'exec', and 'remove_container' for container management; 'pull_image' and 'remove_image' for image management; 'container_stats', 'pod_stats', and 'container_logs' for monitoring. Use these tools to build and manage containerized applications through the CRI standard interface.".to_string()),
         }
     }
 

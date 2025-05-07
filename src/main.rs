@@ -1,9 +1,9 @@
+mod cri;
 mod service;
-
 use anyhow::Result;
 use clap::Parser;
 use rmcp::transport::sse_server::SseServer;
-use rmcp::{transport::stdio, ServiceExt};
+use rmcp::ServiceExt;
 use service::containerd::Server;
 use tracing_subscriber::{self, EnvFilter};
 
