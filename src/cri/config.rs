@@ -326,8 +326,9 @@ pub fn parse_container_config(config: Value) -> ContainerConfig {
 
         // Handle image
         if let Some(image_value) = user_config.get("image") {
-            if let Ok(image_spec) = serde_json::from_value::<ImageSpec>(image_value.clone()) {
-                container_config.image = Some(image_spec);
+            if let Some(image_ref) = image_value.get("image") {
+                container_config.image.as_mut().unwrap().image =
+                    image_ref.as_str().unwrap().to_string();
             }
         }
 

@@ -205,56 +205,86 @@ impl Server {
     pub async fn create_pod(
         &self,
         #[tool(param)]
-        #[schemars(description = "
-            For creating a pod config, the example is:
-            {
-                \"metadata\": {
-                    \"name\": \"pod-name\",
-                    \"uid\": \"pod-uid\",
-                    \"namespace\": \"default\",
-                    \"attempt\": 0
+        #[schemars(
+            description = "Pod name - a unique identifier for the pod within its namespace"
+        )]
+        name: String,
+
+        #[tool(param)]
+        #[schemars(description = "Namespace for the pod (e.g., 'default', 'kube-system')")]
+        namespace: String,
+
+        #[tool(param)]
+        #[schemars(description = "Unique identifier for the pod (UUID format recommended)")]
+        uid: String,
+
+        #[tool(param)]
+        #[schemars(
+            description = "Additional pod configuration options in JSON format, including:
+            - hostname: Custom hostname for the pod
+            - attempt: Pod creation attempt count (default: 0)
+            - log_directory: Path to store container logs
+            - dns_config: DNS server configuration (Example: {\"servers\": [\"8.8.8.8\"], \"searches\": [\"example.com\"], \"options\": [\"ndots:2\"]})
+            - port_mappings: Container port to host port mappings (Example: [{\"protocol\": \"TCP\", \"container_port\": 80, \"host_port\": 8080}])
+            - labels: Key-value pairs for pod identification (Example: {\"app\": \"nginx\"})
+            - annotations: Unstructured metadata as key-value pairs (Example: {\"key\": \"value\"})
+            - linux: Linux-specific configurations 
+            - windows: Windows-specific configurations
+            
+            Example options: {
+                \"hostname\": \"custom-host\",
+                \"log_directory\": \"/custom/log/path\",
+                \"labels\": {\"app\": \"nginx\", \"environment\": \"production\"},
+                \"dns_config\": {\"servers\": [\"8.8.8.8\", \"1.1.1.1\"]}
+            }"
+        )]
+        options: Option<serde_json::Value>,
+    ) -> Result<CallToolResult, McpError> {
+        debug!(
+            "Create pod request - name: {}, namespace: {}, uid: {}, options: {:?}",
+            name, namespace, uid, options
+        );
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            // Create a base config with required fields
+            let mut pod_config_value = serde_json::json!({
+                "metadata": {
+                    "name": name,
+                    "namespace": namespace,
+                    "uid": uid,
+                    "attempt": 0
                 },
-                \"hostname\": \"pod-hostname\",
-                \"log_directory\": \"/var/log/pods\",
-                \"dns_config\": {
-                    \"servers\": [\"8.8.8.8\"],
-                    \"searches\": [\"example.com\"],
-                    \"options\": [\"ndots:2\"]
-                },
-                \"port_mappings\": [
-                    {
-                        \"protocol\": \"TCP\",
-                        \"container_port\": 80,
-                        \"host_port\": 8080
+                "hostname": format!("{}-{}", name, namespace),
+            });
+
+            // Merge options if provided
+            if let Some(opt) = options {
+                if let Some(obj) = opt.as_object() {
+                    let pod_obj = pod_config_value.as_object_mut().unwrap();
+
+                    // Handle specific fields that need special treatment
+                    if let Some(attempt) = obj.get("attempt") {
+                        if let Some(metadata) = pod_obj.get_mut("metadata") {
+                            if let Some(metadata_obj) = metadata.as_object_mut() {
+                                metadata_obj.insert("attempt".to_string(), attempt.clone());
+                            }
+                        }
                     }
-                ],
-                \"labels\": {
-                    \"app\": \"nginx\"
-                },
-                \"annotations\": {
-                    \"key\": \"value\"
-                },
-                \"linux\": {
-                    \"cgroup_parent\": \"/kubepods\",
-                    \"security_context\": {
-                        \"namespace_options\": {
-                            \"network\": \"POD\",
-                            \"pid\": \"CONTAINER\"
+
+                    // Merge the rest of the options
+                    for (key, value) in obj {
+                        if key != "attempt" && key != "name" && key != "namespace" && key != "uid" {
+                            pod_obj.insert(key.clone(), value.clone());
                         }
                     }
                 }
             }
-            ")]
-        config: serde_json::Value,
-    ) -> Result<CallToolResult, McpError> {
-        debug!("create pod request: {:?}", config);
-        let lock = self.runtime_client.lock().await;
-        if let Some(client) = &*lock {
+
             // Parse pod configuration with defaults
-            let pod_config = parse_pod_config(config);
+            let pod_config = parse_pod_config(pod_config_value);
 
             let request = RunPodSandboxRequest {
-                config: Some(pod_config),
+                config: Some(pod_config.clone()),
                 runtime_handler: "".to_string(),
             };
             debug!("run pod sandbox request: {:?}", request);
@@ -262,10 +292,13 @@ impl Server {
             match client.clone().run_pod_sandbox(request).await {
                 Ok(response) => {
                     let pod_id = response.into_inner().pod_sandbox_id;
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
-                        "{{\"pod_id\": \"{}\"}}",
-                        pod_id
-                    ))]));
+                    let create_pod_result = serde_json::json!({
+                        "pod_id": pod_id,
+                        "pod_config": pod_config
+                    });
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string(&create_pod_result).unwrap(),
+                    )]));
                 }
                 Err(e) => {
                     return Ok(CallToolResult::error(vec![Content::text(format!(
@@ -287,28 +320,11 @@ impl Server {
     pub async fn remove_pod(
         &self,
         #[tool(param)]
-        #[schemars(description = "{\"pod_id\": \"pod-12345\"}")]
-        params: serde_json::Value,
+        #[schemars(description = "The pod id to remove")]
+        pod_id: String,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // get pod id from json
-            let pod_id = match params.get("pod_id") {
-                Some(id) => match id.as_str() {
-                    Some(id_str) => id_str.to_string(),
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "pod_id must be a string",
-                        )]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: pod_id",
-                    )]));
-                }
-            };
-
             let request = RemovePodSandboxRequest {
                 pod_sandbox_id: pod_id,
             };
@@ -340,81 +356,91 @@ impl Server {
     pub async fn create_container(
         &self,
         #[tool(param)]
-        #[schemars(description = "
-            For creating a container config, the example is:
-            {
-                \"pod_id\": \"pod-12345\", 
-                \"config\": {
-                    \"metadata\": {
-                        \"name\": \"my-container\"
-                    }, 
-                    \"image\": {
-                        \"image\": \"nginx:latest\"
-                    }, 
-                    \"command\": [\"/bin/sh\"], 
-                    \"args\": [\"-c\", \"while true; do echo hello; sleep 10; done\"],
-                    \"working_dir\": \"/\",
-                    \"envs\": [
-                        {
-                            \"key\": \"PATH\",
-                            \"value\": \"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"
-                        }
-                    ],
-                    \"labels\": {
-                        \"app\": \"nginx\"
-                    },
-                    \"annotations\": {
-                        \"key\": \"value\"
-                    },
-                    \"log_path\": \"my-container/0.log\",
-                    \"stdin\": false,
-                    \"stdin_once\": false,
-                    \"tty\": false
-                }
-            }")]
-        params: serde_json::Value,
+        #[schemars(description = "Pod ID that this container will run in")]
+        pod_id: String,
+
         #[tool(param)]
         #[schemars(
-            description = "Optional pod sandbox configuration to use when creating the container. Provides context for container creation within the pod."
+            description = "Container name - a unique identifier for the container within its pod"
         )]
-        pod_config: Option<serde_json::Value>,
+        name: String,
+
+        #[tool(param)]
+        #[schemars(description = "Container image to use (e.g., 'nginx:latest', 'ubuntu:20.04')")]
+        image: String,
+
+        #[tool(param)]
+        #[schemars(
+            description = "Additional container configuration options in JSON format, including:
+            - command: Command to execute in the container (array of strings)
+            - args: Arguments to the command (array of strings)
+            - working_dir: Working directory for the command
+            - envs: Environment variables as key-value pairs (Example: [{\"key\": \"PATH\", \"value\": \"/usr/local/sbin:/usr/bin\"}])
+            - labels: Key-value pairs for container identification (Example: {\"app\": \"nginx\"})
+            - annotations: Unstructured metadata as key-value pairs (Example: {\"key\": \"value\"})
+            - mounts: Volume mounts (Example: [{\"host_path\": \"/host/path\", \"container_path\": \"/container/path\", \"readonly\": false}])
+            - log_path: Path for container logs relative to the pod log directory
+            - stdin: Whether to keep stdin open (boolean)
+            - stdin_once: Whether to close stdin after first attach (boolean)
+            - tty: Whether to allocate a TTY (boolean)
+            - linux: Linux-specific configurations
+            - windows: Windows-specific configurations
+            
+            Example options: {
+                \"command\": [\"/bin/sh\"],
+                \"args\": [\"-c\", \"while true; do echo hello; sleep 10; done\"],
+                \"working_dir\": \"/app\",
+                \"envs\": [{\"key\": \"DEBUG\", \"value\": \"true\"}],
+                \"labels\": {\"component\": \"web\", \"tier\": \"frontend\"}
+            }"
+        )]
+        options: Option<serde_json::Value>,
+
+        #[tool(param)]
+        #[schemars(
+            description = "Required, provides context for container creation within the pod, it from create_pod tool result's pod_config"
+        )]
+        pod_config: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
+        debug!(
+            "Create container request - pod_id: {}, name: {}, image: {}, options: {:?}",
+            pod_id, name, image, options
+        );
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // Get pod_id from params
-            let pod_id = match params.get("pod_id") {
-                Some(id) => match id.as_str() {
-                    Some(id_str) => id_str.to_string(),
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "pod_id must be a string",
-                        )]));
-                    }
+            // Create a base config with required fields
+            let mut container_config_value = serde_json::json!({
+                "metadata": {
+                    "name": name
                 },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: pod_id",
-                    )]));
-                }
-            };
+                "image": {
+                    "image": image
+                },
+                "log_path": format!("{}/0.log", name)
+            });
 
-            // Get container configuration from params
-            let container_config = match params.get("config") {
-                Some(config) => parse_container_config(config.clone()),
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: config",
-                    )]));
+            // Merge options if provided
+            if let Some(opt) = options {
+                if let Some(obj) = opt.as_object() {
+                    let container_obj = container_config_value.as_object_mut().unwrap();
+
+                    // Merge the options
+                    for (key, value) in obj {
+                        container_obj.insert(key.clone(), value.clone());
+                    }
                 }
-            };
+            }
+
+            // Parse container configuration with defaults
+            let container_config = parse_container_config(container_config_value);
 
             // Parse pod configuration for sandbox_config
-            let sandbox_config = pod_config.map(parse_pod_config);
+            let sandbox_config = parse_pod_config(pod_config);
 
             let request = CreateContainerRequest {
                 pod_sandbox_id: pod_id,
                 config: Some(container_config),
-                sandbox_config,
+                sandbox_config: Some(sandbox_config),
             };
 
             debug!("create container request: {:?}", request);
@@ -447,30 +473,12 @@ impl Server {
     pub async fn remove_container(
         &self,
         #[tool(param)]
-        #[schemars(description = "{\"container_id\": \"container-12345\"}")]
-        params: serde_json::Value,
+        #[schemars(description = "The container id to remove")]
+        container_id: String,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // get container id from json
-            let container_id = match params.get("container_id") {
-                Some(id) => match id.as_str() {
-                    Some(id_str) => id_str.to_string(),
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "container_id must be a string",
-                        )]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: container_id",
-                    )]));
-                }
-            };
-
             let request = RemoveContainerRequest { container_id };
-
             match client.clone().remove_container(request).await {
                 Ok(_) => {
                     return Ok(CallToolResult::success(vec![Content::text(
@@ -495,30 +503,11 @@ impl Server {
     pub async fn stop_pod(
         &self,
         #[tool(param)]
-        #[schemars(
-            description = "JSON containing the pod_id to identify which pod sandbox to stop"
-        )]
-        params: serde_json::Value,
+        #[schemars(description = "The pod id to stop")]
+        pod_id: String,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // Get pod id from json
-            let pod_id = match params.get("pod_id") {
-                Some(id) => match id.as_str() {
-                    Some(id_str) => id_str.to_string(),
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "pod_id must be a string",
-                        )]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: pod_id",
-                    )]));
-                }
-            };
-
             let request = crate::api::runtime::v1::StopPodSandboxRequest {
                 pod_sandbox_id: pod_id,
             };
@@ -547,30 +536,11 @@ impl Server {
     pub async fn start_container(
         &self,
         #[tool(param)]
-        #[schemars(
-            description = "JSON containing the container_id to identify which container to start"
-        )]
-        params: serde_json::Value,
+        #[schemars(description = "The container id to start")]
+        container_id: String,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // Get container id from json
-            let container_id = match params.get("container_id") {
-                Some(id) => match id.as_str() {
-                    Some(id_str) => id_str.to_string(),
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "container_id must be a string",
-                        )]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: container_id",
-                    )]));
-                }
-            };
-
             let request = crate::api::runtime::v1::StartContainerRequest { container_id };
 
             match client.clone().start_container(request).await {
@@ -597,42 +567,17 @@ impl Server {
     pub async fn stop_container(
         &self,
         #[tool(param)]
-        #[schemars(
-            description = "JSON containing the container_id to identify which container to stop and an optional timeout in seconds"
-        )]
-        params: serde_json::Value,
+        #[schemars(description = "The container id to stop")]
+        id: String,
+        #[tool(param)]
+        #[schemars(description = "Optional timeout in seconds for container stop (default: 0)")]
+        timeout: Option<i64>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // Get container id from json
-            let container_id = match params.get("container_id") {
-                Some(id) => match id.as_str() {
-                    Some(id_str) => id_str.to_string(),
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "container_id must be a string",
-                        )]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: container_id",
-                    )]));
-                }
-            };
-
-            // Get timeout if provided (default: 0)
-            let timeout = match params.get("timeout") {
-                Some(timeout) => match timeout.as_i64() {
-                    Some(t) => t as i64,
-                    None => 0,
-                },
-                None => 0,
-            };
-
             let request = crate::api::runtime::v1::StopContainerRequest {
-                container_id,
-                timeout,
+                container_id: id,
+                timeout: timeout.unwrap_or(30),
             };
 
             match client.clone().stop_container(request).await {
@@ -655,85 +600,29 @@ impl Server {
         )]))
     }
 
-    #[tool(description = "Execute a command in a running container with optional TTY and stdin")]
-    pub async fn exec(
+    #[tool(description = "Execute a command in a running container in sync mode")]
+    pub async fn exec_sync(
         &self,
         #[tool(param)]
+        #[schemars(description = "The container id to execute the command in")]
+        container_id: String,
+
+        #[tool(param)]
+        #[schemars(description = "The command to execute")]
+        command: String,
+
+        #[tool(param)]
         #[schemars(
-            description = "JSON containing the container_id and command to execute, with optional TTY and stdin settings"
+            description = "Optional timeout in seconds for command execution (default: 10)"
         )]
-        params: serde_json::Value,
+        timeout: Option<i64>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // Get container id
-            let container_id = match params.get("container_id") {
-                Some(id) => match id.as_str() {
-                    Some(id_str) => id_str.to_string(),
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "container_id must be a string",
-                        )]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: container_id",
-                    )]));
-                }
-            };
-
-            // Get command
-            let command = match params.get("command") {
-                Some(cmd) => match cmd.as_array() {
-                    Some(cmd_arr) => {
-                        let mut cmd_vec = Vec::new();
-                        for c in cmd_arr {
-                            if let Some(c_str) = c.as_str() {
-                                cmd_vec.push(c_str.to_string());
-                            } else {
-                                return Ok(CallToolResult::error(vec![Content::text(
-                                    "Command array must contain only strings",
-                                )]));
-                            }
-                        }
-                        cmd_vec
-                    }
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "command must be an array of strings",
-                        )]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: command",
-                    )]));
-                }
-            };
-
-            // Get tty (optional)
-            let tty = match params.get("tty") {
-                Some(t) => match t.as_bool() {
-                    Some(t_bool) => t_bool,
-                    None => false,
-                },
-                None => false,
-            };
-
-            // Get stdin (optional)
-            let stdin = match params.get("stdin") {
-                Some(s) => match s.as_bool() {
-                    Some(s_bool) => s_bool,
-                    None => false,
-                },
-                None => false,
-            };
-
             let request = crate::api::runtime::v1::ExecSyncRequest {
                 container_id,
-                cmd: command,
-                timeout: 10, // Default timeout of 10 seconds
+                cmd: vec![command],
+                timeout: timeout.unwrap_or(10), // Default timeout of 10 seconds
             };
 
             match client.clone().exec_sync(request).await {
@@ -767,6 +656,7 @@ impl Server {
         )]))
     }
 
+    /// Now not support pull with auth
     #[tool(
         description = "Pull an image from a registry to make it available for container creation"
     )]
@@ -774,72 +664,20 @@ impl Server {
         &self,
         #[tool(param)]
         #[schemars(
-            description = "JSON containing the image reference to pull and optional authentication credentials"
+            description = "The image reference to pull, e.g. docker.io/library/nginx:latest"
         )]
-        params: serde_json::Value,
+        image_reference: String,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
-            // Get image reference
-            let image = match params.get("image") {
-                Some(img) => match img.as_str() {
-                    Some(img_str) => img_str.to_string(),
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "image must be a string",
-                        )]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: image",
-                    )]));
-                }
-            };
-
-            // Get auth config if provided
-            let auth = match params.get("auth") {
-                Some(auth) => {
-                    let auth_map = auth.as_object();
-                    match auth_map {
-                        Some(map) => {
-                            let username =
-                                map.get("username").and_then(|u| u.as_str()).unwrap_or("");
-                            let password =
-                                map.get("password").and_then(|p| p.as_str()).unwrap_or("");
-                            let auth = map.get("auth").and_then(|a| a.as_str()).unwrap_or("");
-                            let server_address = map
-                                .get("server_address")
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("");
-                            let identity_token = map
-                                .get("identity_token")
-                                .and_then(|i| i.as_str())
-                                .unwrap_or("");
-
-                            Some(crate::api::runtime::v1::AuthConfig {
-                                username: username.to_string(),
-                                password: password.to_string(),
-                                auth: auth.to_string(),
-                                server_address: server_address.to_string(),
-                                identity_token: identity_token.to_string(),
-                                registry_token: "".to_string(),
-                            })
-                        }
-                        None => None,
-                    }
-                }
-                None => None,
-            };
-
             let request = crate::api::runtime::v1::PullImageRequest {
                 image: Some(crate::api::runtime::v1::ImageSpec {
-                    image,
+                    image: image_reference,
                     annotations: std::collections::HashMap::new(),
                     runtime_handler: "".to_string(),
                     user_specified_image: "".to_string(),
                 }),
-                auth,
+                auth: None,
                 sandbox_config: None,
             };
 
@@ -869,31 +707,16 @@ impl Server {
     pub async fn remove_image(
         &self,
         #[tool(param)]
-        #[schemars(description = "JSON containing the image reference to remove")]
-        params: serde_json::Value,
+        #[schemars(
+            description = "The image reference to remove, e.g. docker.io/library/nginx:latest"
+        )]
+        image_reference: String,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
-            // Get image reference
-            let image = match params.get("image") {
-                Some(img) => match img.as_str() {
-                    Some(img_str) => img_str.to_string(),
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "image must be a string",
-                        )]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: image",
-                    )]));
-                }
-            };
-
             let request = crate::api::runtime::v1::RemoveImageRequest {
                 image: Some(crate::api::runtime::v1::ImageSpec {
-                    image,
+                    image: image_reference,
                     annotations: std::collections::HashMap::new(),
                     runtime_handler: "".to_string(),
                     user_specified_image: "".to_string(),
@@ -926,44 +749,19 @@ impl Server {
     pub async fn container_logs(
         &self,
         #[tool(param)]
-        #[schemars(
-            description = "JSON containing the container_id, tail lines, follow option, and timestamps option"
-        )]
-        params: serde_json::Value,
+        #[schemars(description = "The container id to retrieve logs from")]
+        container_id: String,
+
+        #[tool(param)]
+        #[schemars(description = "Optional tail lines to retrieve (default: 100)")]
+        tail: Option<i64>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // Get container id
-            let container_id = match params.get("container_id") {
-                Some(id) => match id.as_str() {
-                    Some(id_str) => id_str.to_string(),
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "container_id must be a string",
-                        )]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: container_id",
-                    )]));
-                }
-            };
-
-            // Get tail lines option
-            let tail_lines = match params.get("tail") {
-                Some(t) => match t.as_i64() {
-                    Some(t_int) => t_int as i64,
-                    None => 100, // Default to 100 lines
-                },
-                None => 100, // Default to 100 lines
-            };
-
             let request = crate::api::runtime::v1::ContainerStatusRequest {
                 container_id: container_id.clone(),
                 verbose: true,
             };
-
             match client.clone().container_status(request).await {
                 Ok(status_response) => {
                     let status = status_response.into_inner();
@@ -990,8 +788,8 @@ impl Server {
                             let mut lines: Vec<&str> = log_content.lines().collect();
 
                             // Apply tail if needed
-                            if tail_lines > 0 && (tail_lines as usize) < lines.len() {
-                                lines = lines[(lines.len() - tail_lines as usize)..].to_vec();
+                            if tail.is_some() {
+                                lines = lines[(lines.len() - tail.unwrap() as usize)..].to_vec();
                             }
 
                             // Join lines with newline
@@ -1027,28 +825,11 @@ impl Server {
     pub async fn container_stats(
         &self,
         #[tool(param)]
-        #[schemars(description = "JSON containing the container_id to retrieve statistics for")]
-        params: serde_json::Value,
+        #[schemars(description = "The container id to retrieve statistics for")]
+        container_id: String,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // Get container id
-            let container_id = match params.get("container_id") {
-                Some(id) => match id.as_str() {
-                    Some(id_str) => id_str.to_string(),
-                    None => {
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            "container_id must be a string",
-                        )]));
-                    }
-                },
-                None => {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Missing required parameter: container_id",
-                    )]));
-                }
-            };
-
             let request = crate::api::runtime::v1::ContainerStatsRequest { container_id };
 
             match client.clone().container_stats(request).await {
@@ -1075,20 +856,11 @@ impl Server {
     pub async fn pod_stats(
         &self,
         #[tool(param)]
-        #[schemars(description = "JSON containing optional filter for pod_id to limit results")]
-        params: serde_json::Value,
+        #[schemars(description = "Optional pod id to retrieve stats for")]
+        pod_id: Option<String>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // Get optional pod id filter
-            let pod_id = match params.get("pod_id") {
-                Some(id) => match id.as_str() {
-                    Some(id_str) => Some(id_str.to_string()),
-                    None => None,
-                },
-                None => None,
-            };
-
             // Create filter if pod_id is provided
             let filter = match pod_id {
                 Some(id) => Some(crate::api::runtime::v1::PodSandboxStatsFilter {
@@ -1132,7 +904,7 @@ impl ServerHandler for Server {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("This server provides tools to interact with the Container Runtime Interface (CRI) of Containerd. You can manage container lifecycle including creating and removing pods and containers, listing existing resources, and querying runtime information. Available tools: 'version' for runtime version; 'list_pods', 'list_containers', 'list_images', 'image_fs_info' for resource listing; 'create_pod', 'stop_pod', and 'remove_pod' for pod management; 'create_container', 'start_container', 'stop_container', 'exec', and 'remove_container' for container management; 'pull_image' and 'remove_image' for image management; 'container_stats', 'pod_stats', and 'container_logs' for monitoring. Use these tools to build and manage containerized applications through the CRI standard interface.".to_string()),
+            instructions: Some("This server provides tools to interact with the Container Runtime Interface (CRI) of Containerd. You can manage container lifecycle including creating and removing pods and containers, listing existing resources, and querying runtime information. Available tools: 'version' for runtime version; 'list_pods', 'list_containers', 'list_images', 'image_fs_info' for resource listing; 'create_pod' (with name, namespace, uid and options parameters) for pod creation; 'stop_pod', and 'remove_pod' for pod management; 'create_container' (with pod_id, name, image and options parameters) for container creation; 'start_container', 'stop_container', 'exec', and 'remove_container' for container management; 'pull_image' and 'remove_image' for image management; 'container_stats', 'pod_stats', and 'container_logs' for monitoring. Use these tools to build and manage containerized applications through the CRI standard interface.".to_string()),
         }
     }
 
