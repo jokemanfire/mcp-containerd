@@ -41,6 +41,7 @@ use rmcp::{
     const_string, model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer,
     ServerHandler,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -89,6 +90,21 @@ impl Server {
 
         Ok(())
     }
+
+    /// This is a test for mcp params
+    #[tool(description = "Test for mcp params")]
+    pub async fn test_mcp_params(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "The param to test")]
+        param: bool,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Test for mcp params: {}",
+            param
+        ))]))
+    }
+
     /// This interface may have some security issues, need to be fixed
     #[tool(description = "Get the containerd log file contents to diagnose runtime issues")]
     pub async fn get_containerd_logs(
@@ -220,7 +236,7 @@ impl Server {
 
         #[tool(param)]
         #[schemars(
-            description = "Additional pod configuration options in JSON format, including:
+            description = "Additional pod configuration options in hashmap format,the format is json in string, including:
             - hostname: Custom hostname for the pod
             - attempt: Pod creation attempt count (default: 0)
             - log_directory: Path to store container logs
@@ -238,7 +254,7 @@ impl Server {
                 \"dns_config\": {\"servers\": [\"8.8.8.8\", \"1.1.1.1\"]}
             }"
         )]
-        options: Option<serde_json::Value>,
+        options: String,
     ) -> Result<CallToolResult, McpError> {
         debug!(
             "Create pod request - name: {}, namespace: {}, uid: {}, options: {:?}",
@@ -257,28 +273,14 @@ impl Server {
                 "hostname": format!("{}-{}", name, namespace),
             });
 
-            // Merge options if provided
-            if let Some(opt) = options {
-                if let Some(obj) = opt.as_object() {
-                    let pod_obj = pod_config_value.as_object_mut().unwrap();
-
-                    // Handle specific fields that need special treatment
-                    if let Some(attempt) = obj.get("attempt") {
-                        if let Some(metadata) = pod_obj.get_mut("metadata") {
-                            if let Some(metadata_obj) = metadata.as_object_mut() {
-                                metadata_obj.insert("attempt".to_string(), attempt.clone());
-                            }
-                        }
-                    }
-
-                    // Merge the rest of the options
-                    for (key, value) in obj {
-                        if key != "attempt" && key != "name" && key != "namespace" && key != "uid" {
-                            pod_obj.insert(key.clone(), value.clone());
-                        }
-                    }
+            // Merge the options
+            if let Some(pod_obj) = pod_config_value.as_object_mut() {
+                let options_value = serde_json::from_str::<serde_json::Value>(&options).unwrap();
+                for (key, value) in options_value.as_object().unwrap() {
+                    pod_obj.insert(key.clone(), value.clone());
                 }
             }
+            
 
             // Parse pod configuration with defaults
             let pod_config = parse_pod_config(pod_config_value);
@@ -371,7 +373,7 @@ impl Server {
 
         #[tool(param)]
         #[schemars(
-            description = "Additional container configuration options in JSON format, including:
+            description = "Additional container configuration options in hashmap format,the format is json in string, including:
             - command: Command to execute in the container (array of strings)
             - args: Arguments to the command (array of strings)
             - working_dir: Working directory for the command
@@ -394,13 +396,13 @@ impl Server {
                 \"labels\": {\"component\": \"web\", \"tier\": \"frontend\"}
             }"
         )]
-        options: Option<serde_json::Value>,
+        options: String,
 
         #[tool(param)]
         #[schemars(
-            description = "Required, provides context for container creation within the pod, it from create_pod tool result's pod_config"
+            description = "It must be the result of create_pod tool, provides context for container creation within the pod, the format is json in string"
         )]
-        pod_config: serde_json::Value,
+        pod_config: String,
     ) -> Result<CallToolResult, McpError> {
         debug!(
             "Create container request - pod_id: {}, name: {}, image: {}, options: {:?}",
@@ -420,22 +422,23 @@ impl Server {
             });
 
             // Merge options if provided
-            if let Some(opt) = options {
-                if let Some(obj) = opt.as_object() {
-                    let container_obj = container_config_value.as_object_mut().unwrap();
+ 
+            let container_obj = container_config_value.as_object_mut().unwrap();
 
-                    // Merge the options
-                    for (key, value) in obj {
-                        container_obj.insert(key.clone(), value.clone());
-                    }
-                }
+            // Merge the options
+            let options_value = serde_json::from_str::<serde_json::Value>(&options).unwrap();
+            for (key, value) in options_value.as_object().unwrap() {
+                container_obj.insert(key.clone(), value.clone());
             }
+            
 
             // Parse container configuration with defaults
             let container_config = parse_container_config(container_config_value);
 
+            // Convert HashMap to JSON Value directly
+            let pod_config_value = serde_json::from_str::<serde_json::Value>(&pod_config).unwrap();
             // Parse pod configuration for sandbox_config
-            let sandbox_config = parse_pod_config(pod_config);
+            let sandbox_config = parse_pod_config(pod_config_value);
 
             let request = CreateContainerRequest {
                 pod_sandbox_id: pod_id,
@@ -570,14 +573,14 @@ impl Server {
         #[schemars(description = "The container id to stop")]
         id: String,
         #[tool(param)]
-        #[schemars(description = "Optional timeout in seconds for container stop (default: 0)")]
-        timeout: Option<i64>,
+        #[schemars(description = "Timeout in seconds for container stop (default: 10)")]
+        timeout: i64,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
             let request = crate::api::runtime::v1::StopContainerRequest {
                 container_id: id,
-                timeout: timeout.unwrap_or(30),
+                timeout: timeout,
             };
 
             match client.clone().stop_container(request).await {

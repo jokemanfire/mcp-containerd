@@ -3,6 +3,9 @@ name = "mcp-containerd"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+ctr = []
 
 [dependencies]
 rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", features = ["server","transport-io","transport-sse-server","server"] }
