@@ -8,7 +8,7 @@ default = []
 ctr = []
 
 [dependencies]
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", features = ["server","transport-io","transport-sse-server","server"] }
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk",branch = "main", features = ["server","transport-io","transport-sse-server","server"] }
 tokio = { version = "1", features = ["full", "net"] }
 anyhow = "1.0"
 tracing = "0.1"
