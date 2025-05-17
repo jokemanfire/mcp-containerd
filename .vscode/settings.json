@@ -1,4 +1,5 @@
 {
+    "rust-analyzer.cargo.features": ["ctr"],
     "rust-analyzer.linkedProjects": [
         "Cargo.toml",
     ]

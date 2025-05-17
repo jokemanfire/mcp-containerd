@@ -270,7 +270,7 @@ pub fn parse_container_config(config: Value) -> ContainerConfig {
     // Create default config
     let mut container_config = ContainerConfig {
         metadata: Some(ContainerMetadata {
-            name: format!("container-{}", Uuid::new_v4().to_string()[..8].to_string()),
+            name: format!("container-{}", &Uuid::new_v4().to_string()[..8]),
             attempt: 0,
         }),
         image: Some(ImageSpec {
@@ -304,7 +304,7 @@ pub fn parse_container_config(config: Value) -> ContainerConfig {
                 serde_json::from_value::<Map<String, Value>>(metadata_value.clone())
             {
                 let mut metadata = ContainerMetadata {
-                    name: format!("container-{}", Uuid::new_v4().to_string()[..8].to_string()),
+                    name: format!("container-{}", &Uuid::new_v4().to_string()[..8]),
                     attempt: 0,
                 };
 

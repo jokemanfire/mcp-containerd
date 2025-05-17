@@ -25,23 +25,11 @@
  * - container_logs: Get container logs
  */
 
-use crate::api::runtime::v1::PodSandboxMetadata;
-use crate::api::runtime::v1::{
-    ContainerConfig, CreateContainerRequest, CreateContainerResponse, ImageFsInfoRequest,
-    ImageFsInfoResponse, ImageServiceClient, LinuxContainerConfig, LinuxPodSandboxConfig,
-    ListContainersRequest, ListContainersResponse, ListImagesRequest, ListImagesResponse,
-    ListPodSandboxRequest, ListPodSandboxResponse, Mount, PodSandboxConfig, RemoveContainerRequest,
-    RemoveContainerResponse, RemovePodSandboxRequest, RemovePodSandboxResponse,
-    RunPodSandboxRequest, RunPodSandboxResponse, RuntimeServiceClient, VersionRequest,
-    VersionResponse,
-};
-use crate::cri::config::{parse_container_config, parse_pod_config};
 use anyhow::Result;
 use rmcp::{
     const_string, model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer,
     ServerHandler,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -49,8 +37,11 @@ use tracing::debug;
 #[derive(Clone)]
 pub struct Server {
     endpoint: String,
-    runtime_client: Arc<Mutex<Option<RuntimeServiceClient<tonic::transport::Channel>>>>,
-    image_client: Arc<Mutex<Option<ImageServiceClient<tonic::transport::Channel>>>>,
+    runtime_client: Arc<
+        Mutex<Option<crate::api::runtime::v1::RuntimeServiceClient<tonic::transport::Channel>>>,
+    >,
+    image_client:
+        Arc<Mutex<Option<crate::api::runtime::v1::ImageServiceClient<tonic::transport::Channel>>>>,
 }
 #[tool(tool_box)]
 impl Server {
@@ -79,13 +70,15 @@ impl Server {
         {
             debug!("connect runtime client");
             let mut lock = self.runtime_client.lock().await;
-            *lock = Some(RuntimeServiceClient::new(channel.clone()));
+            *lock = Some(crate::api::runtime::v1::RuntimeServiceClient::new(
+                channel.clone(),
+            ));
         }
 
         {
             debug!("connect image client");
             let mut lock = self.image_client.lock().await;
-            *lock = Some(ImageServiceClient::new(channel));
+            *lock = Some(crate::api::runtime::v1::ImageServiceClient::new(channel));
         }
 
         Ok(())
@@ -128,19 +121,56 @@ impl Server {
         Ok(CallToolResult::success(vec![Content::text(content)]))
     }
 
+    #[tool(description = "Reopen target container log")]
+    pub async fn reopen_container_log(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "The container id to reopen the log for")]
+        container_id: String,
+    ) -> Result<CallToolResult, McpError> {
+        let lock = self.runtime_client.lock().await;
+        if let Some(client) = &*lock {
+            let mut client_clone = client.clone();
+            match crate::cri::container::reopen_container_log(&mut client_clone, container_id).await
+            {
+                Ok(_) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "Container log reopened successfully",
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to reopen container log: {}",
+                        e
+                    ))]));
+                }
+            }
+        }
+        Ok(CallToolResult::error(vec![Content::text(
+            "Runtime client not connected",
+        )]))
+    }
+
     #[tool(
         description = "Get version information from the containerd runtime to verify compatibility"
     )]
     pub async fn version(&self) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = VersionRequest {
-                version: "v1".to_string(),
-            };
-            let response = client.clone().version(request).await.unwrap();
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string(&response.into_inner()).unwrap(),
-            )]));
+            let mut client_clone = client.clone();
+            match crate::cri::runtime::version(&mut client_clone).await {
+                Ok(version_response) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string(&version_response).unwrap(),
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to get version: {}",
+                        e
+                    ))]));
+                }
+            }
         }
         Ok(CallToolResult::error(vec![Content::text(
             "Runtime client not connected",
@@ -153,11 +183,20 @@ impl Server {
     pub async fn list_pods(&self) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = ListPodSandboxRequest { filter: None };
-            let response = client.clone().list_pod_sandbox(request).await.unwrap();
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string(&response.into_inner()).unwrap(),
-            )]));
+            let mut client_clone = client.clone();
+            match crate::cri::pod::list_pods(&mut client_clone).await {
+                Ok(response) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string(&response).unwrap(),
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to list pods: {}",
+                        e
+                    ))]));
+                }
+            }
         }
         Ok(CallToolResult::error(vec![Content::text(
             "Runtime client not connected",
@@ -170,7 +209,7 @@ impl Server {
     pub async fn list_containers(&self) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = ListContainersRequest { filter: None };
+            let request = crate::api::runtime::v1::ListContainersRequest { filter: None };
             let response = client.clone().list_containers(request).await.unwrap();
             return Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string(&response.into_inner()).unwrap(),
@@ -187,14 +226,23 @@ impl Server {
     pub async fn list_images(&self) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
-            let request = ListImagesRequest { filter: None };
-            let response = client.clone().list_images(request).await.unwrap();
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string(&response.into_inner()).unwrap(),
-            )]));
+            let mut client_clone = client.clone();
+            match crate::cri::image::list_images(&mut client_clone).await {
+                Ok(response) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string(&response).unwrap(),
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to list images: {}",
+                        e
+                    ))]));
+                }
+            }
         }
         Ok(CallToolResult::error(vec![Content::text(
-            "Runtime client not connected",
+            "Image client not connected",
         )]))
     }
 
@@ -204,14 +252,23 @@ impl Server {
     pub async fn image_fs_info(&self) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
-            let request = ImageFsInfoRequest {};
-            let response = client.clone().image_fs_info(request).await.unwrap();
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string(&response.into_inner()).unwrap(),
-            )]));
+            let mut client_clone = client.clone();
+            match crate::cri::image::image_fs_info(&mut client_clone).await {
+                Ok(response) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string(&response).unwrap(),
+                    )]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to get image filesystem info: {}",
+                        e
+                    ))]));
+                }
+            }
         }
         Ok(CallToolResult::error(vec![Content::text(
-            "Runtime client not connected",
+            "Image client not connected",
         )]))
     }
 
@@ -262,38 +319,11 @@ impl Server {
         );
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // Create a base config with required fields
-            let mut pod_config_value = serde_json::json!({
-                "metadata": {
-                    "name": name,
-                    "namespace": namespace,
-                    "uid": uid,
-                    "attempt": 0
-                },
-                "hostname": format!("{}-{}", name, namespace),
-            });
-
-            // Merge the options
-            if let Some(pod_obj) = pod_config_value.as_object_mut() {
-                let options_value = serde_json::from_str::<serde_json::Value>(&options).unwrap();
-                for (key, value) in options_value.as_object().unwrap() {
-                    pod_obj.insert(key.clone(), value.clone());
-                }
-            }
-            
-
-            // Parse pod configuration with defaults
-            let pod_config = parse_pod_config(pod_config_value);
-
-            let request = RunPodSandboxRequest {
-                config: Some(pod_config.clone()),
-                runtime_handler: "".to_string(),
-            };
-            debug!("run pod sandbox request: {:?}", request);
-
-            match client.clone().run_pod_sandbox(request).await {
-                Ok(response) => {
-                    let pod_id = response.into_inner().pod_sandbox_id;
+            let mut client_clone = client.clone();
+            match crate::cri::pod::create_pod(&mut client_clone, name, namespace, uid, options)
+                .await
+            {
+                Ok((pod_id, pod_config)) => {
                     let create_pod_result = serde_json::json!({
                         "pod_id": pod_id,
                         "pod_config": pod_config
@@ -327,11 +357,8 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = RemovePodSandboxRequest {
-                pod_sandbox_id: pod_id,
-            };
-
-            match client.clone().remove_pod_sandbox(request).await {
+            let mut client_clone = client.clone();
+            match crate::cri::pod::remove_pod(&mut client_clone, pod_id).await {
                 Ok(_) => {
                     return Ok(CallToolResult::success(vec![Content::text(
                         "{\"success\": true, \"message\": \"Pod removed successfully\"}",
@@ -410,47 +437,18 @@ impl Server {
         );
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // Create a base config with required fields
-            let mut container_config_value = serde_json::json!({
-                "metadata": {
-                    "name": name
-                },
-                "image": {
-                    "image": image
-                },
-                "log_path": format!("{}/0.log", name)
-            });
-
-            // Merge options if provided
- 
-            let container_obj = container_config_value.as_object_mut().unwrap();
-
-            // Merge the options
-            let options_value = serde_json::from_str::<serde_json::Value>(&options).unwrap();
-            for (key, value) in options_value.as_object().unwrap() {
-                container_obj.insert(key.clone(), value.clone());
-            }
-            
-
-            // Parse container configuration with defaults
-            let container_config = parse_container_config(container_config_value);
-
-            // Convert HashMap to JSON Value directly
-            let pod_config_value = serde_json::from_str::<serde_json::Value>(&pod_config).unwrap();
-            // Parse pod configuration for sandbox_config
-            let sandbox_config = parse_pod_config(pod_config_value);
-
-            let request = CreateContainerRequest {
-                pod_sandbox_id: pod_id,
-                config: Some(container_config),
-                sandbox_config: Some(sandbox_config),
-            };
-
-            debug!("create container request: {:?}", request);
-
-            match client.clone().create_container(request).await {
-                Ok(response) => {
-                    let container_id = response.into_inner().container_id;
+            let mut client_clone = client.clone();
+            match crate::cri::container::create_container(
+                &mut client_clone,
+                pod_id,
+                name,
+                image,
+                options,
+                pod_config,
+            )
+            .await
+            {
+                Ok(container_id) => {
                     return Ok(CallToolResult::success(vec![Content::text(format!(
                         "{{\"container_id\": \"{}\"}}",
                         container_id
@@ -481,8 +479,8 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = RemoveContainerRequest { container_id };
-            match client.clone().remove_container(request).await {
+            let mut client_clone = client.clone();
+            match crate::cri::container::remove_container(&mut client_clone, container_id).await {
                 Ok(_) => {
                     return Ok(CallToolResult::success(vec![Content::text(
                         "{\"success\": true, \"message\": \"Container removed successfully\"}",
@@ -511,11 +509,8 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = crate::api::runtime::v1::StopPodSandboxRequest {
-                pod_sandbox_id: pod_id,
-            };
-
-            match client.clone().stop_pod_sandbox(request).await {
+            let mut client_clone = client.clone();
+            match crate::cri::pod::stop_pod(&mut client_clone, pod_id).await {
                 Ok(_) => {
                     return Ok(CallToolResult::success(vec![Content::text(
                         "{\"success\": true, \"message\": \"Pod stopped successfully\"}",
@@ -544,9 +539,8 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = crate::api::runtime::v1::StartContainerRequest { container_id };
-
-            match client.clone().start_container(request).await {
+            let mut client_clone = client.clone();
+            match crate::cri::container::start_container(&mut client_clone, container_id).await {
                 Ok(_) => {
                     return Ok(CallToolResult::success(vec![Content::text(
                         "{\"success\": true, \"message\": \"Container started successfully\"}",
@@ -578,12 +572,8 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = crate::api::runtime::v1::StopContainerRequest {
-                container_id: id,
-                timeout: timeout,
-            };
-
-            match client.clone().stop_container(request).await {
+            let mut client_clone = client.clone();
+            match crate::cri::container::stop_container(&mut client_clone, id, timeout).await {
                 Ok(_) => {
                     return Ok(CallToolResult::success(vec![Content::text(
                         "{\"success\": true, \"message\": \"Container stopped successfully\"}",
@@ -622,18 +612,19 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = crate::api::runtime::v1::ExecSyncRequest {
+            let mut client_clone = client.clone();
+            match crate::cri::container::exec_sync(
+                &mut client_clone,
                 container_id,
-                cmd: vec![command],
-                timeout: timeout.unwrap_or(10), // Default timeout of 10 seconds
-            };
-
-            match client.clone().exec_sync(request).await {
+                command,
+                timeout,
+            )
+            .await
+            {
                 Ok(response) => {
-                    let response_inner = response.into_inner();
-                    let stdout = String::from_utf8_lossy(&response_inner.stdout).to_string();
-                    let stderr = String::from_utf8_lossy(&response_inner.stderr).to_string();
-                    let exit_code = response_inner.exit_code;
+                    let stdout = String::from_utf8_lossy(&response.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&response.stderr).to_string();
+                    let exit_code = response.exit_code;
 
                     let result = serde_json::json!({
                         "stdout": stdout,
@@ -673,20 +664,9 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
-            let request = crate::api::runtime::v1::PullImageRequest {
-                image: Some(crate::api::runtime::v1::ImageSpec {
-                    image: image_reference,
-                    annotations: std::collections::HashMap::new(),
-                    runtime_handler: "".to_string(),
-                    user_specified_image: "".to_string(),
-                }),
-                auth: None,
-                sandbox_config: None,
-            };
-
-            match client.clone().pull_image(request).await {
-                Ok(response) => {
-                    let image_ref = response.into_inner().image_ref;
+            let mut client_clone = client.clone();
+            match crate::cri::image::pull_image(&mut client_clone, image_reference.clone()).await {
+                Ok(image_ref) => {
                     return Ok(CallToolResult::success(vec![Content::text(format!(
                         "{{\"success\": true, \"image_ref\": \"{}\"}}",
                         image_ref
@@ -717,16 +697,9 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
-            let request = crate::api::runtime::v1::RemoveImageRequest {
-                image: Some(crate::api::runtime::v1::ImageSpec {
-                    image: image_reference,
-                    annotations: std::collections::HashMap::new(),
-                    runtime_handler: "".to_string(),
-                    user_specified_image: "".to_string(),
-                }),
-            };
-
-            match client.clone().remove_image(request).await {
+            let mut client_clone = client.clone();
+            match crate::cri::image::remove_image(&mut client_clone, image_reference.clone()).await
+            {
                 Ok(_) => {
                     return Ok(CallToolResult::success(vec![Content::text(
                         "{\"success\": true, \"message\": \"Image removed successfully\"}",
@@ -761,58 +734,29 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = crate::api::runtime::v1::ContainerStatusRequest {
-                container_id: container_id.clone(),
-                verbose: true,
-            };
-            match client.clone().container_status(request).await {
-                Ok(status_response) => {
-                    let status = status_response.into_inner();
+            let mut client_clone = client.clone();
+            match crate::cri::container::container_logs(&mut client_clone, container_id).await {
+                Ok((log_content, _log_path)) => {
+                    let mut lines: Vec<&str> = log_content.lines().collect();
 
-                    // Get the log path from the container status
-                    let log_path = match status.status {
-                        Some(container_status) => {
-                            format!(
-                                "{}/{}",
-                                status.info.get("sandboxLogDir").unwrap_or(&"".to_string()),
-                                container_status.log_path
-                            )
-                        }
-                        None => {
-                            return Ok(CallToolResult::error(vec![Content::text(
-                                "Container status not available",
-                            )]));
-                        }
-                    };
-
-                    // Read the log file
-                    match std::fs::read_to_string(&log_path) {
-                        Ok(log_content) => {
-                            let mut lines: Vec<&str> = log_content.lines().collect();
-
-                            // Apply tail if needed
-                            if tail.is_some() {
-                                lines = lines[(lines.len() - tail.unwrap() as usize)..].to_vec();
-                            }
-
-                            // Join lines with newline
-                            let filtered_content = lines.join("\n");
-
-                            return Ok(CallToolResult::success(vec![Content::text(
-                                filtered_content,
-                            )]));
-                        }
-                        Err(e) => {
-                            return Ok(CallToolResult::error(vec![Content::text(format!(
-                                "Failed to read container logs at {}: {}",
-                                log_path, e
-                            ))]));
+                    // Apply tail if needed
+                    if let Some(tail_lines) = tail {
+                        let tail_count = std::cmp::min(tail_lines as usize, lines.len());
+                        if tail_count > 0 {
+                            lines = lines[(lines.len() - tail_count)..].to_vec();
                         }
                     }
+
+                    // Join lines with newline
+                    let filtered_content = lines.join("\n");
+
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        filtered_content,
+                    )]));
                 }
                 Err(e) => {
                     return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "Failed to get container status: {}",
+                        "Failed to get container logs: {}",
                         e
                     ))]));
                 }
@@ -833,12 +777,11 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            let request = crate::api::runtime::v1::ContainerStatsRequest { container_id };
-
-            match client.clone().container_stats(request).await {
+            let mut client_clone = client.clone();
+            match crate::cri::container::container_stats(&mut client_clone, container_id).await {
                 Ok(response) => {
                     return Ok(CallToolResult::success(vec![Content::text(
-                        serde_json::to_string(&response.into_inner()).unwrap(),
+                        serde_json::to_string(&response).unwrap(),
                     )]));
                 }
                 Err(e) => {
@@ -864,21 +807,11 @@ impl Server {
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
-            // Create filter if pod_id is provided
-            let filter = match pod_id {
-                Some(id) => Some(crate::api::runtime::v1::PodSandboxStatsFilter {
-                    id,
-                    label_selector: std::collections::HashMap::new(),
-                }),
-                None => None,
-            };
-
-            let request = crate::api::runtime::v1::ListPodSandboxStatsRequest { filter };
-
-            match client.clone().list_pod_sandbox_stats(request).await {
+            let mut client_clone = client.clone();
+            match crate::cri::pod::pod_stats(&mut client_clone, pod_id).await {
                 Ok(response) => {
                     return Ok(CallToolResult::success(vec![Content::text(
-                        serde_json::to_string(&response.into_inner()).unwrap(),
+                        serde_json::to_string(&response).unwrap(),
                     )]));
                 }
                 Err(e) => {
