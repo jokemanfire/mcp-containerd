@@ -1,5 +1,6 @@
 mod cri;
 mod service;
+mod ctr;
 use anyhow::Result;
 use clap::Parser;
 use rmcp::transport::sse_server::SseServer;

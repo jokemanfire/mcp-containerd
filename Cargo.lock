@@ -1229,7 +1229,7 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "rmcp"
 version = "0.1.5"
-source = "git+https://github.com/modelcontextprotocol/rust-sdk#9d6f9a2e0d199c6c7f2731bd6f8f7143af060a6b"
+source = "git+https://github.com/modelcontextprotocol/rust-sdk?branch=main#e9a5ae9901441b6269ee8d774debd843b8192405"
 dependencies = [
  "axum 0.8.3",
  "base64",
@@ -1247,12 +1247,13 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "rmcp-macros"
 version = "0.1.5"
-source = "git+https://github.com/modelcontextprotocol/rust-sdk#9d6f9a2e0d199c6c7f2731bd6f8f7143af060a6b"
+source = "git+https://github.com/modelcontextprotocol/rust-sdk?branch=main#e9a5ae9901441b6269ee8d774debd843b8192405"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1296,6 +1297,7 @@ version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fbf2ae1b8bc8e02df939598064d22402220cd5bbcca1c76f7d6a310974d5615"
 dependencies = [
+ "chrono",
  "dyn-clone",
  "schemars_derive",
  "serde",
