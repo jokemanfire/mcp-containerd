@@ -13,6 +13,7 @@ pub struct CtrCmd {
 
 impl CtrCmd {
     // Create a new CtrCmd instance with default settings
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             binary: "ctr".to_string(),

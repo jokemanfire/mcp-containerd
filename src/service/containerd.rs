@@ -1,10 +1,11 @@
 /*
- * Containerd Service Implementation - Container Runtime Interface (CRI)
+ * Containerd Service Implementation - Container Runtime Interface (CRI) and CTR
  *
- * This service provides tools to interact with Containerd through the Container Runtime Interface (CRI).
- * CRI is a plugin interface which enables kubelet to use different container runtimes.
+ * This service provides tools to interact with Containerd through both:
+ * 1. Container Runtime Interface (CRI) - Standard K8s container runtime interface
+ * 2. CTR CLI tool - Direct containerd command line interface
  *
- * Current Supported Tool Interfaces:
+ * CRI Tool Interfaces:
  * - version: Get the runtime version information
  * - list_pods: List all pod sandboxes
  * - list_containers: List all containers
@@ -23,12 +24,22 @@
  * - container_stats: Get container statistics
  * - pod_stats: Get pod statistics
  * - container_logs: Get container logs
+ *
+ * CTR Tool Interfaces:
+ * - run_ctr_command: Run any ctr command
+ * - list_containers_ctr: List all containers using ctr
+ * - list_images_ctr: List all images using ctr
+ * - list_tasks_ctr: List all tasks using ctr
+ * - pull_image_ctr: Pull an image using ctr
+ * - remove_image_ctr: Remove an image using ctr
+ * - run_container_ctr: Run a container using ctr
+ * - remove_container_ctr: Remove a container using ctr
  */
 
+use crate::ctr::cmd::CtrCmd;
 use anyhow::Result;
 use rmcp::{
-    const_string, model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer,
-    ServerHandler,
+    model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer, ServerHandler,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -42,6 +53,7 @@ pub struct Server {
     >,
     image_client:
         Arc<Mutex<Option<crate::api::runtime::v1::ImageServiceClient<tonic::transport::Channel>>>>,
+    binary: String,
 }
 #[tool(tool_box)]
 impl Server {
@@ -50,7 +62,13 @@ impl Server {
             endpoint,
             runtime_client: Arc::new(Mutex::new(None)),
             image_client: Arc::new(Mutex::new(None)),
+            binary: "ctr".to_string(),
         }
+    }
+
+    /// Helper function to create a CtrCmd instance
+    fn create_ctr_cmd(&self, namespace: String) -> CtrCmd {
+        CtrCmd::with_config(self.binary.clone(), namespace, self.endpoint.clone())
     }
 
     pub async fn connect(&self) -> Result<()> {
@@ -84,19 +102,292 @@ impl Server {
         Ok(())
     }
 
-    /// This is a test for mcp params
-    #[tool(description = "Test for mcp params")]
-    pub async fn test_mcp_params(
+    // ================== CTR Tool Functions ==================
+    #[tool(description = "Run any ctr command with custom arguments")]
+    pub async fn run_ctr_command(
         &self,
         #[tool(param)]
-        #[schemars(description = "The param to test")]
-        param: bool,
+        #[schemars(
+            description = "The ctr command to run, e.g. 'container list', 'image pull <image>'"
+        )]
+        command: String,
+
+        #[tool(param)]
+        #[schemars(description = "The namespace to use for the ctr command")]
+        namespace: String,
     ) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Test for mcp params: {}",
-            param
-        ))]))
+        debug!("Running ctr command: {}", command);
+
+        // Split the command into parts
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        if parts.is_empty() {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Command cannot be empty",
+            )]));
+        }
+
+        let ctr_cmd = self.create_ctr_cmd(namespace);
+        match ctr_cmd.custom_command(parts[0], parts[1..].to_vec()) {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                let result = format!(
+                    "Exit Code: {}\n\nStdout:\n{}\n\nStderr:\n{}",
+                    output.status.code().unwrap_or(-1),
+                    stdout,
+                    stderr
+                );
+
+                Ok(CallToolResult::success(vec![Content::text(result)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to execute ctr command: {}",
+                e
+            ))])),
+        }
     }
+
+    #[tool(description = "List all containers using ctr command")]
+    pub async fn list_containers_ctr(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "The namespace to use for the ctr command")]
+        namespace: String,
+    ) -> Result<CallToolResult, McpError> {
+        debug!("Listing containers with ctr");
+
+        let ctr_cmd = self.create_ctr_cmd(namespace);
+        match ctr_cmd.containers_list() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                Ok(CallToolResult::success(vec![Content::text(stdout)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to list containers: {}",
+                e
+            ))])),
+        }
+    }
+
+    #[tool(description = "List all images using ctr command")]
+    pub async fn list_images_ctr(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "The namespace to use for the ctr command")]
+        namespace: String,
+    ) -> Result<CallToolResult, McpError> {
+        debug!("Listing images with ctr");
+
+        let ctr_cmd = self.create_ctr_cmd(namespace);
+        match ctr_cmd.images_list() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                Ok(CallToolResult::success(vec![Content::text(stdout)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to list images: {}",
+                e
+            ))])),
+        }
+    }
+
+    #[tool(description = "List all tasks (running containers) using ctr command")]
+    pub async fn list_tasks_ctr(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "The namespace to use for the ctr command")]
+        namespace: String,
+    ) -> Result<CallToolResult, McpError> {
+        debug!("Listing tasks with ctr");
+
+        let ctr_cmd = self.create_ctr_cmd(namespace);
+        match ctr_cmd.tasks_list() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                Ok(CallToolResult::success(vec![Content::text(stdout)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to list tasks: {}",
+                e
+            ))])),
+        }
+    }
+
+    #[tool(description = "Pull an image using ctr command")]
+    pub async fn pull_image_ctr(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "The image reference to pull, e.g. 'docker.io/library/nginx:latest'"
+        )]
+        image_reference: String,
+
+        #[tool(param)]
+        #[schemars(description = "The namespace to use for the ctr command")]
+        namespace: String,
+    ) -> Result<CallToolResult, McpError> {
+        debug!("Pulling image with ctr: {}", image_reference);
+
+        let ctr_cmd = self.create_ctr_cmd(namespace);
+        match ctr_cmd.image_pull(&image_reference) {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                if output.status.success() {
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Successfully pulled image: {}\n\n{}",
+                        image_reference, stdout
+                    ))]))
+                } else {
+                    Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to pull image: {}\n\n{}",
+                        image_reference, stderr
+                    ))]))
+                }
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to execute pull command: {}",
+                e
+            ))])),
+        }
+    }
+
+    #[tool(description = "Remove an image using ctr command")]
+    pub async fn remove_image_ctr(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "The image reference to remove, e.g. 'docker.io/library/nginx:latest'"
+        )]
+        image_reference: String,
+
+        #[tool(param)]
+        #[schemars(description = "The namespace to use for the ctr command")]
+        namespace: String,
+    ) -> Result<CallToolResult, McpError> {
+        debug!("Removing image with ctr: {}", image_reference);
+
+        let ctr_cmd = self.create_ctr_cmd(namespace);
+        match ctr_cmd.image_remove(&image_reference) {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                if output.status.success() {
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Successfully removed image: {}\n\n{}",
+                        image_reference, stdout
+                    ))]))
+                } else {
+                    Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to remove image: {}\n\n{}",
+                        image_reference, stderr
+                    ))]))
+                }
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to execute remove command: {}",
+                e
+            ))])),
+        }
+    }
+
+    #[tool(description = "Run a container using ctr command")]
+    pub async fn run_container_ctr(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "The image reference to use, e.g. 'docker.io/library/nginx:latest'"
+        )]
+        image_reference: String,
+
+        #[tool(param)]
+        #[schemars(description = "The container ID or name")]
+        container_id: String,
+
+        #[tool(param)]
+        #[schemars(
+            description = "Additional arguments for the container run command (as a space-separated string)"
+        )]
+        args: String,
+
+        #[tool(param)]
+        #[schemars(description = "The namespace to use for the ctr command")]
+        namespace: String,
+    ) -> Result<CallToolResult, McpError> {
+        debug!(
+            "Running container with ctr - image: {}, id: {}, args: {}",
+            image_reference, container_id, args
+        );
+
+        let args_vec: Vec<String> = args.split_whitespace().map(|s| s.to_string()).collect();
+
+        let ctr_cmd = self.create_ctr_cmd(namespace);
+        match ctr_cmd.container_run(&image_reference, &container_id, args_vec) {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                if output.status.success() {
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Successfully created container: {}\n\n{}",
+                        container_id, stdout
+                    ))]))
+                } else {
+                    Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to create container: {}\n\n{}",
+                        container_id, stderr
+                    ))]))
+                }
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to execute container run command: {}",
+                e
+            ))])),
+        }
+    }
+
+    #[tool(description = "Remove a container using ctr command")]
+    pub async fn remove_container_ctr(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "The container ID or name to remove")]
+        container_id: String,
+
+        #[tool(param)]
+        #[schemars(description = "The namespace to use for the ctr command")]
+        namespace: String,
+    ) -> Result<CallToolResult, McpError> {
+        debug!("Removing container with ctr: {}", container_id);
+
+        let ctr_cmd = self.create_ctr_cmd(namespace);
+        match ctr_cmd.container_remove(&container_id) {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                if output.status.success() {
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Successfully removed container: {}\n\n{}",
+                        container_id, stdout
+                    ))]))
+                } else {
+                    Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to remove container: {}\n\n{}",
+                        container_id, stderr
+                    ))]))
+                }
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to execute remove container command: {}",
+                e
+            ))])),
+        }
+    }
+
+    // ================== CRI Tool Functions ==================
 
     /// This interface may have some security issues, need to be fixed
     #[tool(description = "Get the containerd log file contents to diagnose runtime issues")]
@@ -828,7 +1119,7 @@ impl Server {
         )]))
     }
 }
-const_string!(Echo = "echo");
+
 #[tool(tool_box)]
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerInfo {
@@ -840,7 +1131,7 @@ impl ServerHandler for Server {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("This server provides tools to interact with the Container Runtime Interface (CRI) of Containerd. You can manage container lifecycle including creating and removing pods and containers, listing existing resources, and querying runtime information. Available tools: 'version' for runtime version; 'list_pods', 'list_containers', 'list_images', 'image_fs_info' for resource listing; 'create_pod' (with name, namespace, uid and options parameters) for pod creation; 'stop_pod', and 'remove_pod' for pod management; 'create_container' (with pod_id, name, image and options parameters) for container creation; 'start_container', 'stop_container', 'exec', and 'remove_container' for container management; 'pull_image' and 'remove_image' for image management; 'container_stats', 'pod_stats', and 'container_logs' for monitoring. Use these tools to build and manage containerized applications through the CRI standard interface.".to_string()),
+            instructions: Some("This server provides tools to interact with Containerd through both CRI (Container Runtime Interface) and CTR (command line tool). CRI tools for K8s-style management: 'version', 'list_pods', 'list_containers', 'list_images', 'image_fs_info', 'create_pod', 'remove_pod', 'stop_pod', 'create_container', 'start_container', 'stop_container', 'remove_container', 'exec_sync', 'pull_image', 'remove_image', 'container_stats', 'pod_stats', 'container_logs'. CTR tools for direct containerd management (with _ctr suffix): 'run_ctr_command', 'list_containers_ctr', 'list_images_ctr', 'list_tasks_ctr', 'pull_image_ctr', 'remove_image_ctr', 'run_container_ctr', 'remove_container_ctr'. Use CRI tools for K8s-compatible container management and CTR tools for direct containerd operations.".to_string()),
         }
     }
 
