@@ -7,6 +7,8 @@ use rmcp::transport::sse_server::SseServer;
 use rmcp::ServiceExt;
 use service::containerd::Server;
 use tracing_subscriber::{self, EnvFilter};
+use rmcp::transport::StreamableHttpService;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 
 pub mod api {
     pub mod runtime {
@@ -52,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn async_main() -> Result<()> {
     // init logger
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::DEBUG.into()))
+        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
@@ -60,7 +62,7 @@ async fn async_main() -> Result<()> {
 
     let args = Args::parse();
     let container_server = Server::new(args.endpoint.clone());
-    container_server.connect().await.unwrap();
+    container_server.connect().await.expect("Failed to connect to containerd, please check the endpoint");
     match args.transport.as_str() {
         "stdio" => {
             tracing::info!("Using stdio transport");
@@ -79,6 +81,27 @@ async fn async_main() -> Result<()> {
                 .with_service(move || container_server.clone());
             tokio::signal::ctrl_c().await?;
             ct.cancel();
+        }
+        "http" => {
+            tracing::info!("Using HTTP transport on {}", args.address);
+            let service = StreamableHttpService::new(
+                move || Ok(container_server.clone()),
+                LocalSessionManager::default().into(),
+                Default::default(),
+            );
+        
+            let router = axum::Router::new().nest_service("/mcp", service);
+            let tcp_listener = tokio::net::TcpListener::bind(DEFAULT_BIND_ADDRESS).await?;
+        
+            tracing::info!(
+                "MCP HTTP server started at http://{}/mcp",
+                DEFAULT_BIND_ADDRESS
+            );
+            tracing::info!("Press Ctrl+C to shutdown");
+        
+            let _ = axum::serve(tcp_listener, router)
+                .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.unwrap() })
+                .await;
         }
         _ => {
             tracing::error!("Invalid transport type: {}", args.transport);

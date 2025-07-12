@@ -3,12 +3,13 @@ name = "mcp-containerd"
 version = "0.1.0"
 edition = "2021"
 
+
 [features]
 default = []
 ctr = []
 
 [dependencies]
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk",branch = "main", features = ["server","transport-io","transport-sse-server","server"] }
+rmcp = { version = "0.2.0" ,features = ["server","transport-io","transport-sse-server","server","transport-streamable-http-server"] }
 tokio = { version = "1", features = ["full", "net"] }
 anyhow = "1.0"
 tracing = "0.1"
@@ -26,6 +27,8 @@ serde = { version = "1.0", features = ["derive"] }
 tower = "0.4"
 clap = { version = "4.4", features = ["derive"] }
 uuid = { version = "1.0", features = ["v4"] }
+schemars = "0.8"
+axum = { version = "0.8", features = ["macros"] }
 
 [build-dependencies]
 tonic-build = "0.11"

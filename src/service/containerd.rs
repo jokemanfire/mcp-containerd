@@ -35,15 +35,192 @@
  * - run_container_ctr: Run a container using ctr
  * - remove_container_ctr: Remove a container using ctr
  */
-
+#![allow(dead_code)]
 use crate::ctr::cmd::CtrCmd;
 use anyhow::Result;
 use rmcp::{
-    model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer, ServerHandler,
+    handler::server::tool::{Parameters, ToolRouter}, model::*, schemars, service::RequestContext, tool, tool_router,tool_handler, Error as McpError, RoleServer, ServerHandler
 };
+use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunCtrCommandParams {
+    #[schemars(
+        description = "The ctr command to run, e.g. 'container list', 'image pull <image>'"
+    )]
+    command: String,
+    #[schemars(description = "The namespace to use for the ctr command")]
+    namespace: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListContainersCtrParams {
+    #[schemars(description = "The namespace to use for the ctr command")]
+    namespace: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListImagesCtrParams {
+    #[schemars(description = "The namespace to use for the ctr command")]
+    namespace: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListTasksCtrParams {
+    #[schemars(description = "The namespace to use for the ctr command")]
+    namespace: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PullImageCtrParams {
+    #[schemars(description = "The image reference to pull, e.g. 'docker.io/library/nginx:latest'")]
+    image_reference: String,
+    #[schemars(description = "The namespace to use for the ctr command")]
+    namespace: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RemoveImageCtrParams {
+    #[schemars(description = "The image reference to remove, e.g. 'docker.io/library/nginx:latest'")]
+    image_reference: String,
+    #[schemars(description = "The namespace to use for the ctr command")]
+    namespace: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunContainerCtrParams {
+    #[schemars(description = "The image reference to use, e.g. 'docker.io/library/nginx:latest'")]
+    image_reference: String,
+    #[schemars(description = "The container ID or name")]
+    container_id: String,
+    #[schemars(description = "Additional arguments for the container run command (as a space-separated string)")]
+    args: String,
+    #[schemars(description = "The namespace to use for the ctr command")]
+    namespace: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RemoveContainerCtrParams {
+    #[schemars(description = "The container ID or name to remove")]
+    container_id: String,
+    #[schemars(description = "The namespace to use for the ctr command")]
+    namespace: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetContainerdLogsParams {
+    #[schemars(description = "The path to the containerd log file, default is /var/log/containerd/containerd.log")]
+    path: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReopenContainerLogParams {
+    #[schemars(description = "The container id to reopen the log for")]
+    container_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreatePodParams {
+    #[schemars(description = "Pod name - a unique identifier for the pod within its namespace")]
+    name: String,
+    #[schemars(description = "Namespace for the pod (e.g., 'default', 'kube-system')")]
+    namespace: String,
+    #[schemars(description = "Unique identifier for the pod (UUID format recommended)")]
+    uid: String,
+    #[schemars(description = "Additional pod configuration options in hashmap format,the format is json in string")]
+    options: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RemovePodParams {
+    #[schemars(description = "The pod id to remove")]
+    pod_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateContainerParams {
+    #[schemars(description = "Pod ID that this container will run in")]
+    pod_id: String,
+    #[schemars(description = "Container name - a unique identifier for the container within its pod")]
+    name: String,
+    #[schemars(description = "Container image to use (e.g., 'nginx:latest', 'ubuntu:20.04')")]
+    image: String,
+    #[schemars(description = "Additional container configuration options in hashmap format,the format is json in string")]
+    options: String,
+    #[schemars(description = "It must be the result of create_pod tool, provides context for container creation within the pod, the format is json in string")]
+    pod_config: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RemoveContainerParams {
+    #[schemars(description = "The container id to remove")]
+    container_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct StopPodParams {
+    #[schemars(description = "The pod id to stop")]
+    pod_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct StartContainerParams {
+    #[schemars(description = "The container id to start")]
+    container_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct StopContainerParams {
+    #[schemars(description = "The container id to stop")]
+    id: String,
+    #[schemars(description = "Timeout in seconds for container stop (default: 10)")]
+    timeout: i64,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExecSyncParams {
+    #[schemars(description = "The container id to execute the command in")]
+    container_id: String,
+    #[schemars(description = "The command to execute")]
+    command: String,
+    #[schemars(description = "Optional timeout in seconds for command execution (default: 10)")]
+    timeout: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PullImageParams {
+    #[schemars(description = "The image reference to pull, e.g. docker.io/library/nginx:latest")]
+    image_reference: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RemoveImageParams {
+    #[schemars(description = "The image reference to remove, e.g. docker.io/library/nginx:latest")]
+    image_reference: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ContainerLogsParams {
+    #[schemars(description = "The container id to retrieve logs from")]
+    container_id: String,
+    #[schemars(description = "Optional tail lines to retrieve (default: 100)")]
+    tail: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ContainerStatsParams {
+    #[schemars(description = "The container id to retrieve statistics for")]
+    container_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PodStatsParams {
+    #[schemars(description = "Optional pod id to retrieve stats for")]
+    pod_id: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct Server {
@@ -54,8 +231,10 @@ pub struct Server {
     image_client:
         Arc<Mutex<Option<crate::api::runtime::v1::ImageServiceClient<tonic::transport::Channel>>>>,
     binary: String,
+    tool_router: ToolRouter<Self>,
 }
-#[tool(tool_box)]
+
+#[tool_router]
 impl Server {
     pub fn new(endpoint: String) -> Self {
         Self {
@@ -63,6 +242,7 @@ impl Server {
             runtime_client: Arc::new(Mutex::new(None)),
             image_client: Arc::new(Mutex::new(None)),
             binary: "ctr".to_string(),
+            tool_router: ToolRouter::new(),
         }
     }
 
@@ -106,15 +286,7 @@ impl Server {
     #[tool(description = "Run any ctr command with custom arguments")]
     pub async fn run_ctr_command(
         &self,
-        #[tool(param)]
-        #[schemars(
-            description = "The ctr command to run, e.g. 'container list', 'image pull <image>'"
-        )]
-        command: String,
-
-        #[tool(param)]
-        #[schemars(description = "The namespace to use for the ctr command")]
-        namespace: String,
+        Parameters(RunCtrCommandParams { command, namespace }): Parameters<RunCtrCommandParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Running ctr command: {}", command);
 
@@ -151,9 +323,7 @@ impl Server {
     #[tool(description = "List all containers using ctr command")]
     pub async fn list_containers_ctr(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The namespace to use for the ctr command")]
-        namespace: String,
+        Parameters(ListContainersCtrParams { namespace }): Parameters<ListContainersCtrParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Listing containers with ctr");
 
@@ -173,9 +343,7 @@ impl Server {
     #[tool(description = "List all images using ctr command")]
     pub async fn list_images_ctr(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The namespace to use for the ctr command")]
-        namespace: String,
+        Parameters(ListImagesCtrParams { namespace }): Parameters<ListImagesCtrParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Listing images with ctr");
 
@@ -195,9 +363,7 @@ impl Server {
     #[tool(description = "List all tasks (running containers) using ctr command")]
     pub async fn list_tasks_ctr(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The namespace to use for the ctr command")]
-        namespace: String,
+        Parameters(ListTasksCtrParams { namespace }): Parameters<ListTasksCtrParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Listing tasks with ctr");
 
@@ -217,15 +383,7 @@ impl Server {
     #[tool(description = "Pull an image using ctr command")]
     pub async fn pull_image_ctr(
         &self,
-        #[tool(param)]
-        #[schemars(
-            description = "The image reference to pull, e.g. 'docker.io/library/nginx:latest'"
-        )]
-        image_reference: String,
-
-        #[tool(param)]
-        #[schemars(description = "The namespace to use for the ctr command")]
-        namespace: String,
+        Parameters(PullImageCtrParams { image_reference, namespace }): Parameters<PullImageCtrParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Pulling image with ctr: {}", image_reference);
 
@@ -257,15 +415,7 @@ impl Server {
     #[tool(description = "Remove an image using ctr command")]
     pub async fn remove_image_ctr(
         &self,
-        #[tool(param)]
-        #[schemars(
-            description = "The image reference to remove, e.g. 'docker.io/library/nginx:latest'"
-        )]
-        image_reference: String,
-
-        #[tool(param)]
-        #[schemars(description = "The namespace to use for the ctr command")]
-        namespace: String,
+        Parameters(RemoveImageCtrParams { image_reference, namespace }): Parameters<RemoveImageCtrParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Removing image with ctr: {}", image_reference);
 
@@ -297,25 +447,7 @@ impl Server {
     #[tool(description = "Run a container using ctr command")]
     pub async fn run_container_ctr(
         &self,
-        #[tool(param)]
-        #[schemars(
-            description = "The image reference to use, e.g. 'docker.io/library/nginx:latest'"
-        )]
-        image_reference: String,
-
-        #[tool(param)]
-        #[schemars(description = "The container ID or name")]
-        container_id: String,
-
-        #[tool(param)]
-        #[schemars(
-            description = "Additional arguments for the container run command (as a space-separated string)"
-        )]
-        args: String,
-
-        #[tool(param)]
-        #[schemars(description = "The namespace to use for the ctr command")]
-        namespace: String,
+        Parameters(RunContainerCtrParams { image_reference, container_id, args, namespace }): Parameters<RunContainerCtrParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!(
             "Running container with ctr - image: {}, id: {}, args: {}",
@@ -352,13 +484,7 @@ impl Server {
     #[tool(description = "Remove a container using ctr command")]
     pub async fn remove_container_ctr(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The container ID or name to remove")]
-        container_id: String,
-
-        #[tool(param)]
-        #[schemars(description = "The namespace to use for the ctr command")]
-        namespace: String,
+        Parameters(RemoveContainerCtrParams { container_id, namespace }): Parameters<RemoveContainerCtrParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Removing container with ctr: {}", container_id);
 
@@ -393,11 +519,7 @@ impl Server {
     #[tool(description = "Get the containerd log file contents to diagnose runtime issues")]
     pub async fn get_containerd_logs(
         &self,
-        #[tool(param)]
-        #[schemars(
-            description = "The path to the containerd log file, default is /var/log/containerd/containerd.log"
-        )]
-        path: Option<String>,
+        Parameters(GetContainerdLogsParams { path }): Parameters<GetContainerdLogsParams>,
     ) -> Result<CallToolResult, McpError> {
         let path = path.unwrap_or_default();
         // check if the file exists
@@ -415,9 +537,7 @@ impl Server {
     #[tool(description = "Reopen target container log")]
     pub async fn reopen_container_log(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The container id to reopen the log for")]
-        container_id: String,
+        Parameters(ReopenContainerLogParams { container_id }): Parameters<ReopenContainerLogParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -568,41 +688,7 @@ impl Server {
     )]
     pub async fn create_pod(
         &self,
-        #[tool(param)]
-        #[schemars(
-            description = "Pod name - a unique identifier for the pod within its namespace"
-        )]
-        name: String,
-
-        #[tool(param)]
-        #[schemars(description = "Namespace for the pod (e.g., 'default', 'kube-system')")]
-        namespace: String,
-
-        #[tool(param)]
-        #[schemars(description = "Unique identifier for the pod (UUID format recommended)")]
-        uid: String,
-
-        #[tool(param)]
-        #[schemars(
-            description = "Additional pod configuration options in hashmap format,the format is json in string, including:
-            - hostname: Custom hostname for the pod
-            - attempt: Pod creation attempt count (default: 0)
-            - log_directory: Path to store container logs
-            - dns_config: DNS server configuration (Example: {\"servers\": [\"8.8.8.8\"], \"searches\": [\"example.com\"], \"options\": [\"ndots:2\"]})
-            - port_mappings: Container port to host port mappings (Example: [{\"protocol\": \"TCP\", \"container_port\": 80, \"host_port\": 8080}])
-            - labels: Key-value pairs for pod identification (Example: {\"app\": \"nginx\"})
-            - annotations: Unstructured metadata as key-value pairs (Example: {\"key\": \"value\"})
-            - linux: Linux-specific configurations 
-            - windows: Windows-specific configurations
-            
-            Example options: {
-                \"hostname\": \"custom-host\",
-                \"log_directory\": \"/custom/log/path\",
-                \"labels\": {\"app\": \"nginx\", \"environment\": \"production\"},
-                \"dns_config\": {\"servers\": [\"8.8.8.8\", \"1.1.1.1\"]}
-            }"
-        )]
-        options: String,
+        Parameters(CreatePodParams { name, namespace, uid, options }): Parameters<CreatePodParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!(
             "Create pod request - name: {}, namespace: {}, uid: {}, options: {:?}",
@@ -642,9 +728,7 @@ impl Server {
     )]
     pub async fn remove_pod(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The pod id to remove")]
-        pod_id: String,
+        Parameters(RemovePodParams { pod_id }): Parameters<RemovePodParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -675,52 +759,7 @@ impl Server {
     )]
     pub async fn create_container(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Pod ID that this container will run in")]
-        pod_id: String,
-
-        #[tool(param)]
-        #[schemars(
-            description = "Container name - a unique identifier for the container within its pod"
-        )]
-        name: String,
-
-        #[tool(param)]
-        #[schemars(description = "Container image to use (e.g., 'nginx:latest', 'ubuntu:20.04')")]
-        image: String,
-
-        #[tool(param)]
-        #[schemars(
-            description = "Additional container configuration options in hashmap format,the format is json in string, including:
-            - command: Command to execute in the container (array of strings)
-            - args: Arguments to the command (array of strings)
-            - working_dir: Working directory for the command
-            - envs: Environment variables as key-value pairs (Example: [{\"key\": \"PATH\", \"value\": \"/usr/local/sbin:/usr/bin\"}])
-            - labels: Key-value pairs for container identification (Example: {\"app\": \"nginx\"})
-            - annotations: Unstructured metadata as key-value pairs (Example: {\"key\": \"value\"})
-            - mounts: Volume mounts (Example: [{\"host_path\": \"/host/path\", \"container_path\": \"/container/path\", \"readonly\": false}])
-            - log_path: Path for container logs relative to the pod log directory
-            - stdin: Whether to keep stdin open (boolean)
-            - stdin_once: Whether to close stdin after first attach (boolean)
-            - tty: Whether to allocate a TTY (boolean)
-            - linux: Linux-specific configurations
-            - windows: Windows-specific configurations
-            
-            Example options: {
-                \"command\": [\"/bin/sh\"],
-                \"args\": [\"-c\", \"while true; do echo hello; sleep 10; done\"],
-                \"working_dir\": \"/app\",
-                \"envs\": [{\"key\": \"DEBUG\", \"value\": \"true\"}],
-                \"labels\": {\"component\": \"web\", \"tier\": \"frontend\"}
-            }"
-        )]
-        options: String,
-
-        #[tool(param)]
-        #[schemars(
-            description = "It must be the result of create_pod tool, provides context for container creation within the pod, the format is json in string"
-        )]
-        pod_config: String,
+        Parameters(CreateContainerParams { pod_id, name, image, options, pod_config }): Parameters<CreateContainerParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!(
             "Create container request - pod_id: {}, name: {}, image: {}, options: {:?}",
@@ -764,9 +803,7 @@ impl Server {
     )]
     pub async fn remove_container(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The container id to remove")]
-        container_id: String,
+        Parameters(RemoveContainerParams { container_id }): Parameters<RemoveContainerParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -794,9 +831,7 @@ impl Server {
     #[tool(description = "Stop a running pod sandbox and all its containers")]
     pub async fn stop_pod(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The pod id to stop")]
-        pod_id: String,
+        Parameters(StopPodParams { pod_id }): Parameters<StopPodParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -824,9 +859,7 @@ impl Server {
     #[tool(description = "Start a created container, making it ready to execute workloads")]
     pub async fn start_container(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The container id to start")]
-        container_id: String,
+        Parameters(StartContainerParams { container_id }): Parameters<StartContainerParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -854,12 +887,7 @@ impl Server {
     #[tool(description = "Stop a running container gracefully with an optional timeout")]
     pub async fn stop_container(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The container id to stop")]
-        id: String,
-        #[tool(param)]
-        #[schemars(description = "Timeout in seconds for container stop (default: 10)")]
-        timeout: i64,
+        Parameters(StopContainerParams { id, timeout }): Parameters<StopContainerParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -887,19 +915,7 @@ impl Server {
     #[tool(description = "Execute a command in a running container in sync mode")]
     pub async fn exec_sync(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The container id to execute the command in")]
-        container_id: String,
-
-        #[tool(param)]
-        #[schemars(description = "The command to execute")]
-        command: String,
-
-        #[tool(param)]
-        #[schemars(
-            description = "Optional timeout in seconds for command execution (default: 10)"
-        )]
-        timeout: Option<i64>,
+        Parameters(ExecSyncParams { container_id, command, timeout }): Parameters<ExecSyncParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -947,11 +963,7 @@ impl Server {
     )]
     pub async fn pull_image(
         &self,
-        #[tool(param)]
-        #[schemars(
-            description = "The image reference to pull, e.g. docker.io/library/nginx:latest"
-        )]
-        image_reference: String,
+        Parameters(PullImageParams { image_reference }): Parameters<PullImageParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
@@ -980,11 +992,7 @@ impl Server {
     #[tool(description = "Remove an image from the container runtime to free up disk space")]
     pub async fn remove_image(
         &self,
-        #[tool(param)]
-        #[schemars(
-            description = "The image reference to remove, e.g. docker.io/library/nginx:latest"
-        )]
-        image_reference: String,
+        Parameters(RemoveImageParams { image_reference }): Parameters<RemoveImageParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.image_client.lock().await;
         if let Some(client) = &*lock {
@@ -1015,13 +1023,7 @@ impl Server {
     )]
     pub async fn container_logs(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The container id to retrieve logs from")]
-        container_id: String,
-
-        #[tool(param)]
-        #[schemars(description = "Optional tail lines to retrieve (default: 100)")]
-        tail: Option<i64>,
+        Parameters(ContainerLogsParams { container_id, tail }): Parameters<ContainerLogsParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -1062,9 +1064,7 @@ impl Server {
     #[tool(description = "Get detailed resource usage statistics for a container")]
     pub async fn container_stats(
         &self,
-        #[tool(param)]
-        #[schemars(description = "The container id to retrieve statistics for")]
-        container_id: String,
+        Parameters(ContainerStatsParams { container_id }): Parameters<ContainerStatsParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -1092,9 +1092,7 @@ impl Server {
     #[tool(description = "Get aggregate resource usage statistics for all pods")]
     pub async fn pod_stats(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Optional pod id to retrieve stats for")]
-        pod_id: Option<String>,
+        Parameters(PodStatsParams { pod_id }): Parameters<PodStatsParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {
@@ -1120,7 +1118,7 @@ impl Server {
     }
 }
 
-#[tool(tool_box)]
+#[tool_handler]
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
