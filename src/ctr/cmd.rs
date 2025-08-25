@@ -1,7 +1,11 @@
 use anyhow::Result;
+use tracing::debug;
 use std::process::{Command, Output};
 
+
+const CTR_ADDRESS: &str = "/run/containerd/containerd.sock";
 // CtrCmd provides functionality to execute containerd cli commands
+#[derive(Debug)]
 pub struct CtrCmd {
     // Path to the ctr binary
     binary: String,
@@ -18,16 +22,16 @@ impl CtrCmd {
         Self {
             binary: "ctr".to_string(),
             namespace: "default".to_string(),
-            address: "/run/containerd/containerd.sock".to_string(),
+            address: CTR_ADDRESS.to_string(),
         }
     }
 
     // Create a new CtrCmd with custom settings
-    pub fn with_config(binary: String, namespace: String, address: String) -> Self {
+    pub fn with_config(binary: String, namespace: String) -> Self {
         Self {
             binary,
             namespace,
-            address,
+            address: CTR_ADDRESS.to_string(),
         }
     }
 
@@ -43,7 +47,7 @@ impl CtrCmd {
 
         // Add the command arguments
         cmd.args(args);
-
+        debug!("Executing ctr command: {:?}", cmd);
         // Execute the command and return the result
         Ok(cmd.output()?)
     }

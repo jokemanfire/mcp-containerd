@@ -1,6 +1,6 @@
 # MCP Containerd
 
-This is an MCP server implemented using the RMCP (Rust Model Context Protocol) library for operating Containerd's CRI interfaces.
+This is an MCP server implemented using the RMCP (Rust Model Context Protocol) library for operating Containerd.
 
 ## Features
 
@@ -8,6 +8,7 @@ This is an MCP server implemented using the RMCP (Rust Model Context Protocol) l
 - Supports all Containerd CRI interface operations
 - Provides Runtime Service interfaces
 - Provides Image Service interfaces
+- Supports ctr interface
 
 ## Prerequisites
 
@@ -24,7 +25,8 @@ cargo build --release
 ## Running
 
 ```bash
-cargo run --release
+mcp-containerd -t http  #use streamhttp
+mcp-containerd --help #list the help info
 ```
 
 By default, the service will connect to the `unix:///run/containerd/containerd.sock` endpoint.
@@ -74,9 +76,6 @@ The MCP server includes the following main components:
 - Delete images
 - Get image filesystem information
 
-## Configuration
-
-Currently using default configuration. Future versions will support customizing connection parameters through configuration files.
 
 ## License
 

@@ -29,7 +29,7 @@ const DEFAULT_CONTAINERD_ENDPOINT: &str = "unix:///run/containerd/containerd.soc
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Transport type: stdio or sse
+    /// Transport type: stdio or sse or http
     #[arg(short, long, default_value = "stdio")]
     transport: String,
 
@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn async_main() -> Result<()> {
     // init logger
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
+        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::DEBUG.into()))
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
@@ -102,6 +102,7 @@ async fn async_main() -> Result<()> {
             let _ = axum::serve(tcp_listener, router)
                 .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.unwrap() })
                 .await;
+            
         }
         _ => {
             tracing::error!("Invalid transport type: {}", args.transport);

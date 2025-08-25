@@ -222,14 +222,17 @@ pub struct PodStatsParams {
     pod_id: Option<String>,
 }
 
+type RuntimeClient = Arc<
+    Mutex<Option<crate::api::runtime::v1::RuntimeServiceClient<tonic::transport::Channel>>>,
+>;
+type ImageClient = Arc<
+    Mutex<Option<crate::api::runtime::v1::ImageServiceClient<tonic::transport::Channel>>>,
+>;
 #[derive(Clone)]
 pub struct Server {
     endpoint: String,
-    runtime_client: Arc<
-        Mutex<Option<crate::api::runtime::v1::RuntimeServiceClient<tonic::transport::Channel>>>,
-    >,
-    image_client:
-        Arc<Mutex<Option<crate::api::runtime::v1::ImageServiceClient<tonic::transport::Channel>>>>,
+    runtime_client: RuntimeClient,
+    image_client: ImageClient,
     binary: String,
     tool_router: ToolRouter<Self>,
 }
@@ -242,13 +245,13 @@ impl Server {
             runtime_client: Arc::new(Mutex::new(None)),
             image_client: Arc::new(Mutex::new(None)),
             binary: "ctr".to_string(),
-            tool_router: ToolRouter::new(),
+            tool_router: Self::tool_router(),
         }
     }
 
     /// Helper function to create a CtrCmd instance
     fn create_ctr_cmd(&self, namespace: String) -> CtrCmd {
-        CtrCmd::with_config(self.binary.clone(), namespace, self.endpoint.clone())
+        CtrCmd::with_config(self.binary.clone(), namespace)
     }
 
     pub async fn connect(&self) -> Result<()> {
@@ -299,6 +302,7 @@ impl Server {
         }
 
         let ctr_cmd = self.create_ctr_cmd(namespace);
+        debug!("Created ctr command: {:?}", ctr_cmd);
         match ctr_cmd.custom_command(parts[0], parts[1..].to_vec()) {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();

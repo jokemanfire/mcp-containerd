@@ -9,7 +9,7 @@ default = []
 ctr = []
 
 [dependencies]
-rmcp = { version = "0.2.0" ,features = ["server","transport-io","transport-sse-server","server","transport-streamable-http-server"] }
+rmcp = { version = "0.6.0" ,features = ["server","transport-io","transport-sse-server","server","transport-streamable-http-server"] }
 tokio = { version = "1", features = ["full", "net"] }
 anyhow = "1.0"
 tracing = "0.1"
