@@ -1,7 +1,6 @@
 use anyhow::Result;
-use tracing::debug;
 use std::process::{Command, Output};
-
+use tracing::debug;
 
 const CTR_ADDRESS: &str = "/run/containerd/containerd.sock";
 // CtrCmd provides functionality to execute containerd cli commands

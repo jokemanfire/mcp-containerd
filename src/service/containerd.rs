@@ -39,7 +39,11 @@
 use crate::ctr::cmd::CtrCmd;
 use anyhow::Result;
 use rmcp::{
-    handler::server::tool::{Parameters, ToolRouter}, model::*, schemars, service::RequestContext, tool, tool_router,tool_handler, Error as McpError, RoleServer, ServerHandler
+    handler::server::tool::{Parameters, ToolRouter},
+    model::*,
+    schemars,
+    service::RequestContext,
+    tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
 };
 use std::future::Future;
 use std::sync::Arc;
@@ -84,7 +88,9 @@ pub struct PullImageCtrParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RemoveImageCtrParams {
-    #[schemars(description = "The image reference to remove, e.g. 'docker.io/library/nginx:latest'")]
+    #[schemars(
+        description = "The image reference to remove, e.g. 'docker.io/library/nginx:latest'"
+    )]
     image_reference: String,
     #[schemars(description = "The namespace to use for the ctr command")]
     namespace: String,
@@ -96,7 +102,9 @@ pub struct RunContainerCtrParams {
     image_reference: String,
     #[schemars(description = "The container ID or name")]
     container_id: String,
-    #[schemars(description = "Additional arguments for the container run command (as a space-separated string)")]
+    #[schemars(
+        description = "Additional arguments for the container run command (as a space-separated string)"
+    )]
     args: String,
     #[schemars(description = "The namespace to use for the ctr command")]
     namespace: String,
@@ -112,7 +120,9 @@ pub struct RemoveContainerCtrParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetContainerdLogsParams {
-    #[schemars(description = "The path to the containerd log file, default is /var/log/containerd/containerd.log")]
+    #[schemars(
+        description = "The path to the containerd log file, default is /var/log/containerd/containerd.log"
+    )]
     path: Option<String>,
 }
 
@@ -130,7 +140,9 @@ pub struct CreatePodParams {
     namespace: String,
     #[schemars(description = "Unique identifier for the pod (UUID format recommended)")]
     uid: String,
-    #[schemars(description = "Additional pod configuration options in hashmap format,the format is json in string")]
+    #[schemars(
+        description = "Additional pod configuration options in hashmap format,the format is json in string"
+    )]
     options: String,
 }
 
@@ -144,13 +156,19 @@ pub struct RemovePodParams {
 pub struct CreateContainerParams {
     #[schemars(description = "Pod ID that this container will run in")]
     pod_id: String,
-    #[schemars(description = "Container name - a unique identifier for the container within its pod")]
+    #[schemars(
+        description = "Container name - a unique identifier for the container within its pod"
+    )]
     name: String,
     #[schemars(description = "Container image to use (e.g., 'nginx:latest', 'ubuntu:20.04')")]
     image: String,
-    #[schemars(description = "Additional container configuration options in hashmap format,the format is json in string")]
+    #[schemars(
+        description = "Additional container configuration options in hashmap format,the format is json in string"
+    )]
     options: String,
-    #[schemars(description = "It must be the result of create_pod tool, provides context for container creation within the pod, the format is json in string")]
+    #[schemars(
+        description = "It must be the result of create_pod tool, provides context for container creation within the pod, the format is json in string"
+    )]
     pod_config: String,
 }
 
@@ -222,12 +240,10 @@ pub struct PodStatsParams {
     pod_id: Option<String>,
 }
 
-type RuntimeClient = Arc<
-    Mutex<Option<crate::api::runtime::v1::RuntimeServiceClient<tonic::transport::Channel>>>,
->;
-type ImageClient = Arc<
-    Mutex<Option<crate::api::runtime::v1::ImageServiceClient<tonic::transport::Channel>>>,
->;
+type RuntimeClient =
+    Arc<Mutex<Option<crate::api::runtime::v1::RuntimeServiceClient<tonic::transport::Channel>>>>;
+type ImageClient =
+    Arc<Mutex<Option<crate::api::runtime::v1::ImageServiceClient<tonic::transport::Channel>>>>;
 #[derive(Clone)]
 pub struct Server {
     endpoint: String,
@@ -387,7 +403,10 @@ impl Server {
     #[tool(description = "Pull an image using ctr command")]
     pub async fn pull_image_ctr(
         &self,
-        Parameters(PullImageCtrParams { image_reference, namespace }): Parameters<PullImageCtrParams>,
+        Parameters(PullImageCtrParams {
+            image_reference,
+            namespace,
+        }): Parameters<PullImageCtrParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Pulling image with ctr: {}", image_reference);
 
@@ -419,7 +438,10 @@ impl Server {
     #[tool(description = "Remove an image using ctr command")]
     pub async fn remove_image_ctr(
         &self,
-        Parameters(RemoveImageCtrParams { image_reference, namespace }): Parameters<RemoveImageCtrParams>,
+        Parameters(RemoveImageCtrParams {
+            image_reference,
+            namespace,
+        }): Parameters<RemoveImageCtrParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Removing image with ctr: {}", image_reference);
 
@@ -451,7 +473,12 @@ impl Server {
     #[tool(description = "Run a container using ctr command")]
     pub async fn run_container_ctr(
         &self,
-        Parameters(RunContainerCtrParams { image_reference, container_id, args, namespace }): Parameters<RunContainerCtrParams>,
+        Parameters(RunContainerCtrParams {
+            image_reference,
+            container_id,
+            args,
+            namespace,
+        }): Parameters<RunContainerCtrParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!(
             "Running container with ctr - image: {}, id: {}, args: {}",
@@ -488,7 +515,10 @@ impl Server {
     #[tool(description = "Remove a container using ctr command")]
     pub async fn remove_container_ctr(
         &self,
-        Parameters(RemoveContainerCtrParams { container_id, namespace }): Parameters<RemoveContainerCtrParams>,
+        Parameters(RemoveContainerCtrParams {
+            container_id,
+            namespace,
+        }): Parameters<RemoveContainerCtrParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Removing container with ctr: {}", container_id);
 
@@ -692,7 +722,12 @@ impl Server {
     )]
     pub async fn create_pod(
         &self,
-        Parameters(CreatePodParams { name, namespace, uid, options }): Parameters<CreatePodParams>,
+        Parameters(CreatePodParams {
+            name,
+            namespace,
+            uid,
+            options,
+        }): Parameters<CreatePodParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!(
             "Create pod request - name: {}, namespace: {}, uid: {}, options: {:?}",
@@ -763,7 +798,13 @@ impl Server {
     )]
     pub async fn create_container(
         &self,
-        Parameters(CreateContainerParams { pod_id, name, image, options, pod_config }): Parameters<CreateContainerParams>,
+        Parameters(CreateContainerParams {
+            pod_id,
+            name,
+            image,
+            options,
+            pod_config,
+        }): Parameters<CreateContainerParams>,
     ) -> Result<CallToolResult, McpError> {
         debug!(
             "Create container request - pod_id: {}, name: {}, image: {}, options: {:?}",
@@ -919,7 +960,11 @@ impl Server {
     #[tool(description = "Execute a command in a running container in sync mode")]
     pub async fn exec_sync(
         &self,
-        Parameters(ExecSyncParams { container_id, command, timeout }): Parameters<ExecSyncParams>,
+        Parameters(ExecSyncParams {
+            container_id,
+            command,
+            timeout,
+        }): Parameters<ExecSyncParams>,
     ) -> Result<CallToolResult, McpError> {
         let lock = self.runtime_client.lock().await;
         if let Some(client) = &*lock {

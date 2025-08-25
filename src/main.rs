@@ -4,11 +4,11 @@ mod service;
 use anyhow::Result;
 use clap::Parser;
 use rmcp::transport::sse_server::SseServer;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::StreamableHttpService;
 use rmcp::ServiceExt;
 use service::containerd::Server;
 use tracing_subscriber::{self, EnvFilter};
-use rmcp::transport::StreamableHttpService;
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 
 pub mod api {
     pub mod runtime {
@@ -62,7 +62,10 @@ async fn async_main() -> Result<()> {
 
     let args = Args::parse();
     let container_server = Server::new(args.endpoint.clone());
-    container_server.connect().await.expect("Failed to connect to containerd, please check the endpoint");
+    container_server
+        .connect()
+        .await
+        .expect("Failed to connect to containerd, please check the endpoint");
     match args.transport.as_str() {
         "stdio" => {
             tracing::info!("Using stdio transport");
@@ -89,20 +92,19 @@ async fn async_main() -> Result<()> {
                 LocalSessionManager::default().into(),
                 Default::default(),
             );
-        
+
             let router = axum::Router::new().nest_service("/mcp", service);
             let tcp_listener = tokio::net::TcpListener::bind(DEFAULT_BIND_ADDRESS).await?;
-        
+
             tracing::info!(
                 "MCP HTTP server started at http://{}/mcp",
                 DEFAULT_BIND_ADDRESS
             );
             tracing::info!("Press Ctrl+C to shutdown");
-        
+
             let _ = axum::serve(tcp_listener, router)
                 .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.unwrap() })
                 .await;
-            
         }
         _ => {
             tracing::error!("Invalid transport type: {}", args.transport);
